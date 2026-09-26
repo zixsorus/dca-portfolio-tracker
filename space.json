@@ -1,0 +1,8 @@
+{
+  "entry": "client/dist/index.html",
+  "managedCronJobs": [],
+  "name": "DCA Portfolio Tracker",
+  "platformVersion": 22,
+  "runtime": "typescript",
+  "slug": "dca-portfolio-tracker"
+}
