@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Local application data (may contain portfolio details)
+app.db*
+*.sqlite
+*.sqlite3
+
+# Environment variables and local credentials
+.env*
+*.pem
+*.key
+
+# Generated build output
+.space-build/
+.space-build-*/
+dist/
+build/
+*.tsbuildinfo
+
+# Package-manager and tool caches
+.bun/
+.bun-cache/
+.cache/
+cache/
+*.cache
+
+# Local platform and audit output
+.harness/
+audits/
+.xmds-icon
+
+# Logs, coverage, and temporary files
+*.log
+logs/
+coverage/
+tmp/
+*.tmp
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
