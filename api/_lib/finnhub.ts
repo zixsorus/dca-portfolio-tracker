@@ -1,9 +1,8 @@
 // Market data via Finnhub REST (replaces ctx.tool.finance_ticker from the
-// original Hatch space). Finnhub US-equity daily candles are USD by
-// construction, so the original currency guard (currency === "USD") is
-// preserved by construction. The exact-symbol-match guard is replaced by
-// Finnhub's `s !== "ok"` / `no_data` signal for unknown symbols, which we
-// treat as a per-symbol failure exactly like the original did.
+// original Hatch space). Uses free-tier supported endpoints:
+// - /quote: real-time/latest price (c), previous close (pc), timestamp (t)
+// - /stock/metric: 52-week high (52WeekHigh), 6-month momentum (26WeekPriceReturnDaily)
+// Preserves guards: price > 0, per-symbol failure isolation.
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -18,46 +17,20 @@ function apiKey(): string {
   return key;
 }
 
-interface CandleApiResponse {
-  s?: string;
-  t?: number[];
-  c?: number[];
-  h?: number[];
+interface QuoteApiResponse {
+  c?: number;
+  pc?: number;
+  h?: number;
+  l?: number;
+  o?: number;
+  t?: number;
 }
 
-export interface CandleData {
-  closes: number[];
-  highs: number[];
-  times: number[];
-}
-
-/** Fetch daily candles; throws when Finnhub reports no data or too few points. */
-export async function fetchCandles(symbol: string, fromSec: number, toSec: number): Promise<CandleData> {
-  const url =
-    `${FINNHUB_BASE}/stock/candle?symbol=${encodeURIComponent(symbol)}` +
-    `&resolution=D&from=${fromSec}&to=${toSec}&token=${encodeURIComponent(apiKey())}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`Finnhub HTTP ${res.status} for ${symbol}`);
-  const data = (await res.json()) as CandleApiResponse;
-  if (data.s !== "ok" || !Array.isArray(data.t) || !Array.isArray(data.c) || data.t.length === 0) {
-    throw new Error(`Finnhub returned no data for ${symbol} (s=${data.s ?? "unknown"})`);
-  }
-  const rawHighs = Array.isArray(data.h) ? data.h : [];
-  const closes: number[] = [];
-  const highs: number[] = [];
-  const times: number[] = [];
-  for (let i = 0; i < data.t.length; i++) {
-    const close = data.c[i];
-    const t = data.t[i];
-    if (typeof close === "number" && Number.isFinite(close) && close > 0 && typeof t === "number") {
-      closes.push(close);
-      const high = rawHighs[i];
-      highs.push(typeof high === "number" && Number.isFinite(high) && high > 0 ? high : close);
-      times.push(t);
-    }
-  }
-  if (closes.length < 2) throw new Error(`not enough data points for ${symbol}`);
-  return { closes, highs, times };
+interface MetricApiResponse {
+  metric?: {
+    "52WeekHigh"?: number;
+    "26WeekPriceReturnDaily"?: number;
+  };
 }
 
 export interface PriceSnapshot {
@@ -67,24 +40,50 @@ export interface PriceSnapshot {
   asOf: Date;
 }
 
-/** 1 year of daily candles → latest close, prior close, 52-week high. */
+/** Fetches quote (price, previous close) and basic metrics (52-week high). */
 export async function getPriceSnapshot(symbol: string): Promise<PriceSnapshot> {
-  const toSec = Math.floor(Date.now() / 1000);
-  const fromSec = toSec - 366 * 24 * 60 * 60;
-  const { closes, highs, times } = await fetchCandles(symbol, fromSec, toSec);
-  const price = closes.at(-1);
-  const previousClose = closes.at(-2) ?? null;
-  if (price === undefined || !Number.isFinite(price) || price <= 0) {
-    throw new Error(`invalid price for ${symbol}`);
+  const token = encodeURIComponent(apiKey());
+  const sym = encodeURIComponent(symbol);
+  const quoteUrl = `${FINNHUB_BASE}/quote?symbol=${sym}&token=${token}`;
+  const metricUrl = `${FINNHUB_BASE}/stock/metric?symbol=${sym}&metric=all&token=${token}`;
+
+  const [quoteRes, metricRes] = await Promise.all([
+    fetch(quoteUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
+    fetch(metricUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }).catch(() => null),
+  ]);
+
+  if (!quoteRes.ok) throw new Error(`Finnhub quote HTTP ${quoteRes.status} for ${symbol}`);
+  const quoteData = (await quoteRes.json()) as QuoteApiResponse;
+
+  // Unknown or invalid symbols return c=0, t=0
+  if (typeof quoteData.c !== "number" || !Number.isFinite(quoteData.c) || quoteData.c <= 0 || !quoteData.t) {
+    throw new Error(`invalid price or no data for ${symbol}`);
   }
-  const maxHigh = highs.length > 0 ? Math.max(...highs) : null;
-  const lastTime = times.at(-1);
-  if (lastTime === undefined) throw new Error(`not enough data points for ${symbol}`);
+
+  const price = quoteData.c;
+  const previousClose =
+    typeof quoteData.pc === "number" && Number.isFinite(quoteData.pc) && quoteData.pc > 0
+      ? quoteData.pc
+      : null;
+
+  let high52w: number | null = null;
+  if (metricRes && metricRes.ok) {
+    try {
+      const metricData = (await metricRes.json()) as MetricApiResponse;
+      const h52 = metricData.metric?.["52WeekHigh"];
+      if (typeof h52 === "number" && Number.isFinite(h52) && h52 > 0) {
+        high52w = h52;
+      }
+    } catch {
+      // metric failure is non-fatal; high52w stays null
+    }
+  }
+
   return {
     price,
     previousClose,
-    high52w: maxHigh !== null && Number.isFinite(maxHigh) && maxHigh > 0 ? maxHigh : null,
-    asOf: new Date(lastTime * 1000),
+    high52w,
+    asOf: new Date(quoteData.t * 1000),
   };
 }
 
@@ -93,21 +92,23 @@ export interface TrendResult {
   asOfIso: string;
 }
 
-/** 6-month daily candles → momentum return (same window math as the original). */
+/** 6-month momentum return via Finnhub 26WeekPriceReturnDaily metric. */
 export async function getTrendReturn(symbol: string): Promise<TrendResult> {
-  const since = new Date();
-  since.setUTCMonth(since.getUTCMonth() - 6);
-  const toSec = Math.floor(Date.now() / 1000);
-  const fromSec = Math.floor(since.getTime() / 1000);
-  const { closes, times } = await fetchCandles(symbol, fromSec, toSec);
-  const first = closes.at(0);
-  const last = closes.at(-1);
-  const lastTime = times.at(-1);
-  if (first === undefined || last === undefined || lastTime === undefined) {
-    throw new Error(`not enough data points for ${symbol}`);
+  const token = encodeURIComponent(apiKey());
+  const sym = encodeURIComponent(symbol);
+  const metricUrl = `${FINNHUB_BASE}/stock/metric?symbol=${sym}&metric=all&token=${token}`;
+
+  const res = await fetch(metricUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`Finnhub metric HTTP ${res.status} for ${symbol}`);
+  const data = (await res.json()) as MetricApiResponse;
+
+  const returnDaily = data.metric?.["26WeekPriceReturnDaily"];
+  if (typeof returnDaily !== "number" || !Number.isFinite(returnDaily)) {
+    throw new Error(`not enough metric return data for ${symbol}`);
   }
+
   return {
-    trendReturn: last / first - 1,
-    asOfIso: new Date(lastTime * 1000).toISOString(),
+    trendReturn: returnDaily / 100, // percentage to decimal
+    asOfIso: new Date().toISOString(),
   };
 }

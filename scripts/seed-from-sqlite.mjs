@@ -22,10 +22,30 @@
  * Never pass a token or key as a CLI argument, and never store one in a file.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const WORK_DIR = join(SCRIPT_DIR, '..');
+const MIGRATIONS_DIR = join(WORK_DIR, 'drizzle');
+const BREAKPOINT = '--> statement-breakpoint';
+
+function loadDotEnv() {
+  const envPath = join(WORK_DIR, '.env');
+  if (!existsSync(envPath)) return;
+  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    if (key && !(key in process.env)) process.env[key] = value;
+  }
+}
+loadDotEnv();
 
 // node:sqlite is imported lazily (only needed when reading a source DB file)
 // so --migrate-only also works on Node versions without node:sqlite.
@@ -35,21 +55,17 @@ async function openSourceReadOnly(path) {
 }
 
 const BATCH_SIZE = 200;
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const WORK_DIR = join(SCRIPT_DIR, '..');
-const MIGRATIONS_DIR = join(WORK_DIR, 'drizzle');
-const BREAKPOINT = '--> statement-breakpoint';
 
 function usage() {
   console.error(`Usage:
-  node scripts/seed-from-sqlite.mjs --source <path-to-app.db> --target <libsql-url|file:>
-  node scripts/seed-from-sqlite.mjs --migrate-only --target <libsql-url|file:>
+  node scripts/seed-from-sqlite.mjs --source <path-to-app.db> [--target <libsql-url|file:>]
+  node scripts/seed-from-sqlite.mjs --migrate-only [--target <libsql-url|file:>]
     --migrate-only: apply drizzle migrations only (keeps the migration default
     seed rows).
-  node scripts/seed-from-sqlite.mjs --schema-only --target <libsql-url|file:>
+  node scripts/seed-from-sqlite.mjs --schema-only [--target <libsql-url|file:>]
     --schema-only: apply drizzle migrations, then remove the migration default
     rows, leaving empty tables. Use for a fresh local dev database.
-Auth token via TURSO_AUTH_TOKEN env var only (never as a CLI arg).`);
+Target and auth token default to TURSO_DATABASE_URL and TURSO_AUTH_TOKEN from .env.`);
 }
 
 function parseArgs(argv) {
@@ -64,8 +80,12 @@ function parseArgs(argv) {
     }
   }
   if (!args.target) {
-    usage();
-    throw new Error('--target is required.');
+    if (process.env.TURSO_DATABASE_URL) {
+      args.target = process.env.TURSO_DATABASE_URL;
+    } else {
+      usage();
+      throw new Error('--target is required (or set TURSO_DATABASE_URL in .env).');
+    }
   }
   if (!args.migrateOnly && !args.schemaOnly && !args.source) {
     usage();
