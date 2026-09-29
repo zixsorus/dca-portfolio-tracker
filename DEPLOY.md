@@ -1,97 +1,129 @@
 # คู่มือ Deploy — DCA Portfolio Tracker บน Vercel
 
-คู่มือนี้พาคุณย้ายแอป DCA Portfolio Tracker จาก Hatch ขึ้น Vercel พร้อมฐานข้อมูล
-จริงของเต้ย (ตั้งใจให้ทำทีละขั้นตอน ใช้เวลาประมาณ 20–30 นาที)
-
 สถาปัตยกรรม: React SPA (static) + Vercel Serverless Functions (`api/`) +
 ฐานข้อมูล Turso (SQLite) + ราคาหุ้นสดจาก Finnhub
 
+คู่มือนี้มี 3 ส่วน:
+
+- **ส่วนที่ 1** — รันบนเครื่องตัวเอง (local dev)
+- **ส่วนที่ 2** — ขึ้น production บน Vercel
+- **ส่วนที่ 3** — วิธีจัดการฐานข้อมูลแบบมาตรฐาน (Drizzle)
+
 ---
 
-## รันบนเครื่องตัวเอง (local dev)
+## ของที่ต้องเตรียม (ทำครั้งเดียว)
 
-```bash
+- Node.js 20+ และ Git
+- บัญชี Turso (ฟรี) — https://turso.tech → สร้าง database เปล่า จดไว้ 2 ค่า:
+  - **Database URL** — หน้าตาแบบ `libsql://<ชื่อ-db>-<บัญชี>.turso.io`
+  - **Auth Token** — สร้าง token ใหม่สำหรับ DB นี้
+- (ถ้าอยากกด "ดึงราคาล่าสุด") Finnhub API key ฟรี — https://finnhub.io
+  (แผนฟรี 60 calls/นาที แอปนี้ดึง ~8 symbols ใช้ได้สบาย)
+
+> token/key เก็บไว้ในที่ปลอดภัย ใช้ผ่าน environment variable เท่านั้น
+> ห้ามวางลงไฟล์ที่ commit ขึ้น repo
+
+---
+
+## ส่วนที่ 1 — รันบนเครื่องตัวเอง
+
+```powershell
+git clone https://github.com/zixsorus/dca-portfolio-tracker.git
+cd dca-portfolio-tracker
 npm install
-cp .env.example .env   # แก้ค่าใน .env ถ้าต้องการ (ดูคำอธิบายในไฟล์)
+```
+
+สร้างไฟล์ `.env` ในโฟลเดอร์โปรเจกต์:
+
+```
+TURSO_DATABASE_URL=libsql://<ชื่อ-db>-<บัญชี>.turso.io
+TURSO_AUTH_TOKEN=<token>
+FINNHUB_API_KEY=<key>   # ถ้ามี
+```
+
+สร้างตาราง + ใส่ค่าเริ่มต้น (รันครั้งเดียวต่อ DB):
+
+```powershell
+$env:TURSO_DATABASE_URL="libsql://<ชื่อ-db>-<บัญชี>.turso.io"
+$env:TURSO_AUTH_TOKEN="<token>"
+
+npm run db:migrate
+npm run db:seed -- --target "libsql://<ชื่อ-db>-<บัญชี>.turso.io"
+```
+
+แล้วรันแอพ:
+
+```powershell
 npm run dev
 ```
 
-แล้วเปิด http://localhost:5173
+เปิด http://localhost:5173
 
-- ครั้งแรก `npm run dev` จะสร้าง `./local.db` ให้อัตโนมัติ โดยมีแค่ schema
-  เปล่าๆ (ตารางครบ แต่ไม่มีข้อมูล) — ไม่มีการย้ายข้อมูลอะไรทั้งสิ้น
-- เพิ่มหุ้น/รายการซื้อ/ตั้งค่าแผนผ่านหน้าเว็บได้เลย ข้อมูลเก็บใน `./local.db`
-  บนเครื่องตัวเอง
-- ไฟล์ `.env` ถูก gitignore ไว้แล้ว ไม่หลุดขึ้น repo — ตัวอย่างค่าดูที่
-  `.env.example`
-- `FINNHUB_API_KEY` จำเป็นเฉพาะตอนกด "ดึงราคาล่าสุด" ถ้าไม่ใส่ปุ่มนั้นจะ
+**ค่าเริ่มต้นที่ `db:seed` ใส่ให้:**
+
+- settings: DCA 2,000 บาท/เดือน, เป้าหมาย 100,000 บาท, ผลตอบแทนคาดหวัง 8%/ปี
+- หุ้น 7 ตัว: NVDA 16%, AAPL / MSFT / TSLA / META / AMZN / GOOGL ตัวละ 14%
+  (น้ำหนักรวม 100% พอดี)
+
+**หมายเหตุ:**
+
+- `.env` ถูก gitignore แล้ว ไม่หลุดขึ้น repo — ดูตัวอย่างค่าได้ที่ `.env.example`
+- local dev ต่อ Turso ตัวเดียวกับ production — ข้อมูลที่แก้ใน local มีผลกับ
+  ของจริงทันที ถ้าอยากทดลองแบบไม่กระทบ ให้สลับ `.env` เป็น
+  `TURSO_DATABASE_URL=file:./local.db` ชั่วคราว (ไม่ต้องใช้ token,
+  `npm run dev` จะสร้างไฟล์และ schema ให้อัตโนมัติ)
+- `FINNHUB_API_KEY` จำเป็นเฉพาะตอนกด "ดึงราคาล่าสุด" ถ้าไม่ใส่ปุ่มจะ
   แจ้งเตือนตามปกติโดยไม่ล้างราคาเก่า
-- อยากเริ่มใหม่ล้างข้อมูลทั้งหมด: หยุด dev แล้วลบ `./local.db` ทิ้ง รัน
-  `npm run dev` ใหม่อีกครั้ง
 
 ---
 
-## ขั้นที่ 1 — สร้างฐานข้อมูลบน Turso
+## ส่วนที่ 2 — ขึ้น production บน Vercel
 
-1. สมัคร/ล็อกอินที่ https://turso.tech (มี free tier)
-2. สร้างฐานข้อมูลเปล่า เช่น ชื่อ `dca-portfolio` (แผนฟรีเพียงพอ)
-3. จดค่า 2 อย่างนี้ไว้ (ต้องใช้ในขั้นที่ 4 และ 5):
-   - **Database URL** — หน้าตาแบบ `libsql://<ชื่อ-db>-<บัญชี>.turso.io`
-   - **Auth Token** — สร้าง token ใหม่สำหรับ DB นี้
+### 2.1 Push โค้ดขึ้น GitHub
 
-> เก็บ token ไว้ในที่ปลอดภัย ห้ามวางลงไฟล์/โค้ดเด็ดขาด — token จะถูกใช้ผ่าน
-> environment variable เท่านั้น
+`git add -A` → commit → `git push` (ย้ำว่า `.gitignore` กันไฟล์ `*.db`
+และ `.env*` ไว้แล้ว — ห้าม commit ฐานข้อมูลหรือ key ขึ้นไปเด็ดขาด)
 
-## ขั้นที่ 2 — ขอ Finnhub API Key (ฟรี)
+### 2.2 Import โปรเจกต์ใน Vercel + ตั้งค่า Environment Variables
 
-1. สมัครที่ https://finnhub.io → ได้ API key ฟรี
-2. แผนฟรีจำกัด **60 calls/นาที** — แอปนี้ดึงราคาแค่ ~8 ตัว (8 symbols)
-   เลยใช้ได้สบาย ไม่เกิน limit
-
-## ขั้นที่ 3 — Push โค้ดขึ้น GitHub
-
-1. สร้าง repo ใหม่บน GitHub (เลือก **Private** เพื่อความปลอดภัย)
-2. push โค้ดจากโฟลเดอร์นี้ขึ้นไป
-   (ยืนยันว่า `.gitignore` กันไฟล์ `app.db*`, `*.db`, `.env*` ไว้แล้ว —
-   ห้าม commit ฐานข้อมูลจริงหรือ API key ขึ้นไปเด็ดขาด)
-
-## ขั้นที่ 4 — Import โปรเจกต์ใน Vercel + ตั้งค่า Environment Variables
-
-1. ที่ https://vercel.com → **Add New → Project** → เลือก repo จากขั้นที่ 3
+1. ที่ https://vercel.com → **Add New → Project** → เลือก repo
 2. ตั้งค่า Environment Variables **3 ตัว** (Production + Preview + Development):
-   - `TURSO_DATABASE_URL` = Database URL จากขั้นที่ 1
-   - `TURSO_AUTH_TOKEN` = Auth Token จากขั้นที่ 1
-   - `FINNHUB_API_KEY` = Finnhub API key จากขั้นที่ 2
-3. กด **Deploy** — รอบแรกแอปจะขึ้นมาโดยยังไม่มีข้อมูลพอร์ต (ปกติ)
+   - `TURSO_DATABASE_URL` = Database URL จากของที่ต้องเตรียม
+   - `TURSO_AUTH_TOKEN` = Auth Token จากของที่ต้องเตรียม
+   - `FINNHUB_API_KEY` = Finnhub API key จากของที่ต้องเตรียม
+3. กด **Deploy** — รอบแรกแอปจะขึ้นมาพร้อมค่าเริ่มต้นจาก `db:seed`
+   (ถ้ารัน seed ไว้แล้ว) หรือตารางเปล่า
 
-## ขั้นที่ 5 — ย้ายข้อมูลพอร์ตจริงจาก app.db เข้า Turso (รันครั้งเดียว)
+### 2.3 (ทางเลือก) ย้ายข้อมูลพอร์ตจริงจาก app.db เข้า Turso
 
-รันจากเครื่องของคุณในโฟลเดอร์โปรเจกต์นี้ (ต้องมีไฟล์
-`~/workspace/ts-spaces/dca-portfolio-tracker/app.db` อยู่):
+ถ้ามีไฟล์ `app.db` เก่าที่อยากย้ายข้อมูลจริง (settings / หุ้น / ธุรกรรม)
+เข้า Turso ให้รันครั้งเดียวจากโฟลเดอร์โปรเจกต์:
 
-```bash
-export TURSO_AUTH_TOKEN="<token จากขั้นที่ 1>"   # ห้ามใส่ token ในคำสั่ง CLI ตรงๆ
-node scripts/seed-from-sqlite.mjs \
-  --source ~/workspace/ts-spaces/dca-portfolio-tracker/app.db \
+```powershell
+$env:TURSO_AUTH_TOKEN="<token>"   # token ใส่ผ่าน env var เท่านั้น ห้ามเป็น argument
+node scripts/seed-from-sqlite.mjs `
+  --source "C:\path\to\app.db" `
   --target "libsql://<ชื่อ-db>-<บัญชี>.turso.io"
 ```
 
-สคริปต์จะ:
-1. รัน migration (`drizzle/*.sql`) บน Turso ตามลำดับไฟล์
-2. ล้าง seed ตัวอย่างที่ migration ใส่มา (settings 1 แถว + หุ้น 7 ตัว)
-   แล้วแทนที่ด้วยข้อมูลจริงของเต้ย (1 / 8 / 10 แถว)
-3. คัดลอกทุกตารางจาก `app.db` (เปิดแบบ read-only ไม่มีการเขียนทับไฟล์จริง)
-   แล้วพิมพ์จำนวนแถวที่คัดลอกได้ต่อตาราง
+สคริปต์จะรัน migration ให้ก่อน (ถ้ายังไม่มีตาราง) แล้วคัดลอกทุกตารางจาก
+`app.db` (เปิดแบบ read-only ไม่เขียนทับไฟล์ต้นฉบับ) พร้อมพิมพ์จำนวนแถว
+ที่คัดลอกได้ต่อตาราง — รันซ้ำได้ ข้อมูลจะถูกแทนที่ด้วยข้อมูลในไฟล์
+ต้นฉบับรอบล่าสุด
 
-> สคริปต์เป็น idempotent แบบคร่าวๆ — รันซ้ำได้ ผลลัพธ์คือข้อมูลถูกแทนที่
-> ด้วยข้อมูลจาก `app.db` ต้นทางรอบล่าสุด (เหมาะกับการซิงก์ซ้ำ)
+---
 
-## ขั้นที่ 6 — ทดสอบแอปที่ Deploy แล้ว
+## ส่วนที่ 3 — จัดการฐานข้อมูล (มาตรฐาน Drizzle)
 
-1. เปิด URL ของโปรเจกต์ใน Vercel
-2. เช็กว่าตัวเลขตรงกับของเดิม: หุ้น 8 ตัว, ธุรกรรม 10 รายการ,
-   ตั้งค่า DCA 2,000 บาท/เดือน, เป้าหมาย 100,000 บาท
-3. ลองกดรีเฟรชราคา (Finnhub) แล้วดูว่าราคาปัจจุบันอัปเดต
+schema ถูกนิยามที่ `shared/schema.ts` ไฟล์ migration อยู่ที่ `drizzle/`
+(ห้ามแก้ไฟล์ migration ที่รันไปแล้ว — สร้างไฟล์ใหม่แทน)
+
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `npm run db:generate` | สร้างไฟล์ migration ใหม่จาก `shared/schema.ts` หลังแก้ schema |
+| `npm run db:migrate` | รัน migration กับ DB เป้าหมาย (อ่าน `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` จาก env) |
+| `npm run db:seed -- --target <url>` | ใส่ค่าเริ่มต้น (settings + หุ้น 7 ตัว) — idempotent รันซ้ำไม่สร้างข้อมูลซ้ำ |
+| `npm run db:studio` | เปิด Drizzle Studio ดู/แก้ข้อมูลใน DB ผ่านเบราว์เซอร์ |
 
 ---
 
@@ -99,17 +131,24 @@ node scripts/seed-from-sqlite.mjs \
 
 | อาการ | วิธีแก้ |
 |---|---|
-| Seed script บอก `TURSO_AUTH_TOKEN env var is required` | ลืม `export TURSO_AUTH_TOKEN=...` ก่อนรัน (อย่าใส่ token เป็น argument) |
+| `TURSO_AUTH_TOKEN env var is required` | ลืมตั้ง `$env:TURSO_AUTH_TOKEN="..."` ใน PowerShell ก่อนรัน (อย่าใส่ token เป็น argument) |
+| `drizzle-kit migrate` บอกตารางมีอยู่แล้ว | DB นี้รัน migration ไปแล้ว ข้ามไป `db:seed` ได้เลย |
+| เปิดแอพแล้วขึ้น "เปิดข้อมูลไม่สำเร็จ" | ตาราง `settings` ว่าง — รัน `npm run db:seed` หนึ่งรอบแล้ว refresh |
 | API บน Vercel ตอบ 500 / เชื่อม DB ไม่ได้ | ตรวจ env vars ทั้ง 3 ตัวใน Vercel → Settings → Environment Variables แล้ว redeploy |
 | ราคาไม่อัปเดต / Finnhub error | ตรวจ `FINNHUB_API_KEY` และดูว่าเกิน 60 calls/นาทีหรือไม่ (8 symbols ปกติไม่เกิน) |
-| ข้อมูลใน Turso ไม่ตรง/เก่า | รัน seed script ซ้ำอีกรอบ ข้อมูลจะถูกแทนที่ด้วย `app.db` ล่าสุด |
-| อยากทดสอบสคริปต์โดยไม่แตะ Turso | ใช้ `--target file:/tmp/dca-seed-test.db` ทดสอบกับไฟล์ local ก่อน |
+| อยากทดสอบโดยไม่แตะ Turso | ใช้ `--target file:./local.db` (หรือ `/tmp/xxx.db`) กับ `db:seed` / `seed-from-sqlite.mjs` |
 
-## สิ่งที่ต้องทำเอง (ทำแทนไม่ได้)
+## Cheat sheet (PowerShell, รันในโฟลเดอร์โปรเจกต์)
 
-- สมัคร Turso / สร้าง DB / สร้าง token (ขั้นที่ 1)
-- สมัคร Finnhub / คัดลอก API key (ขั้นที่ 2)
-- สร้าง repo GitHub + push โค้ด (ขั้นที่ 3)
-- เชื่อม Vercel กับ repo + ใส่ env vars 3 ตัว + กด Deploy (ขั้นที่ 4)
-- รัน seed script ด้วย token ของตัวเอง (ขั้นที่ 5)
-- เปิดแอปตรวจความถูกต้องของข้อมูล (ขั้นที่ 6)
+```powershell
+# ตั้ง env (ครั้งเดียวต่อ session)
+$env:TURSO_DATABASE_URL="libsql://<ชื่อ-db>-<บัญชี>.turso.io"
+$env:TURSO_AUTH_TOKEN="<token>"
+
+# ตั้ง DB ใหม่หมด
+npm run db:migrate
+npm run db:seed -- --target $env:TURSO_DATABASE_URL
+
+# รันแอพ
+npm run dev
+```

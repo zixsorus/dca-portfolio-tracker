@@ -33,15 +33,3 @@ CREATE TABLE transactions (
   note TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
---> statement-breakpoint
-INSERT INTO settings (id, monthly_dca, goal_thb, expected_annual_return, fx_thb_usd, daily_alert_threshold, drawdown_threshold, rebalance_tolerance, updated_at)
-VALUES (1, 2000, 100000, 0.08, NULL, 0.10, 0.20, 0.05, unixepoch('now') * 1000);
---> statement-breakpoint
-INSERT INTO assets (symbol, name, sector, target_weight, created_at) VALUES
-  ('NVDA', 'NVIDIA', 'Semiconductors', 0.142857142857143, unixepoch('now') * 1000),
-  ('AAPL', 'Apple', 'Hardware / Services', 0.142857142857143, unixepoch('now') * 1000),
-  ('MSFT', 'Microsoft', 'Software / Cloud', 0.142857142857143, unixepoch('now') * 1000),
-  ('TSLA', 'Tesla', 'EV / Energy', 0.142857142857143, unixepoch('now') * 1000),
-  ('META', 'Meta Platforms', 'Social / Ads', 0.142857142857143, unixepoch('now') * 1000),
-  ('AMZN', 'Amazon', 'Commerce / Cloud', 0.142857142857143, unixepoch('now') * 1000),
-  ('GOOGL', 'Alphabet', 'Search / Cloud', 0.142857142857143, unixepoch('now') * 1000);
