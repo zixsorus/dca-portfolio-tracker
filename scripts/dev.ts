@@ -8,14 +8,12 @@
  *  - Vite dev server on http://localhost:5173 with /api proxied to :3001
  *
  * Database: uses TURSO_DATABASE_URL when set, otherwise a local SQLite file
- * at ./local.db — created on first run and seeded from your portfolio data
- * when the original app.db is found (read-only, never modified), otherwise
- * created with the migration default data.
+ * at ./local.db — created on first run with an empty schema (tables only,
+ * no data). Set TURSO_DATABASE_URL in .env to use Turso instead.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -52,26 +50,17 @@ function loadDotEnv(): void {
   }
 }
 
-/** Ensure we have a database for local dev; auto-seed on first run when possible. */
+/** Ensure we have a database for local dev; create an empty schema on first run. */
 function ensureDatabase(): void {
   if (process.env.TURSO_DATABASE_URL) return;
   const localDb = join(WORK_DIR, "local.db");
   process.env.TURSO_DATABASE_URL = `file:${localDb}`;
   if (existsSync(localDb)) return;
 
-  const hatchDb = join(homedir(), "workspace", "ts-spaces", "dca-portfolio-tracker", "app.db");
-  const seedArgs =
-    existsSync(hatchDb)
-      ? ["--source", hatchDb, "--target", `file:${localDb}`]
-      : ["--migrate-only", "--target", `file:${localDb}`];
-  if (existsSync(hatchDb)) {
-    console.log("[dev] creating ./local.db from your portfolio data (first run)…");
-  } else {
-    console.log("[dev] creating ./local.db with default data (first run)…");
-  }
+  console.log("[dev] creating ./local.db with an empty schema (first run)…");
   execFileSync(
     process.execPath,
-    [join(SCRIPT_DIR, "seed-from-sqlite.mjs"), ...seedArgs],
+    [join(SCRIPT_DIR, "seed-from-sqlite.mjs"), "--schema-only", "--target", `file:${localDb}`],
     { cwd: WORK_DIR, stdio: "inherit" },
   );
 }

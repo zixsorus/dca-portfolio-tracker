@@ -45,16 +45,20 @@ function usage() {
   node scripts/seed-from-sqlite.mjs --source <path-to-app.db> --target <libsql-url|file:>
   node scripts/seed-from-sqlite.mjs --migrate-only --target <libsql-url|file:>
     --migrate-only: apply drizzle migrations only (keeps the migration default
-    seed rows). Use for a fresh local dev database when no source DB exists.
+    seed rows).
+  node scripts/seed-from-sqlite.mjs --schema-only --target <libsql-url|file:>
+    --schema-only: apply drizzle migrations, then remove the migration default
+    rows, leaving empty tables. Use for a fresh local dev database.
 Auth token via TURSO_AUTH_TOKEN env var only (never as a CLI arg).`);
 }
 
 function parseArgs(argv) {
-  const args = { source: null, target: null, migrateOnly: false };
+  const args = { source: null, target: null, migrateOnly: false, schemaOnly: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--source') args.source = argv[++i];
     else if (argv[i] === '--target') args.target = argv[++i];
     else if (argv[i] === '--migrate-only') args.migrateOnly = true;
+    else if (argv[i] === '--schema-only') args.schemaOnly = true;
     else {
       throw new Error(`Unknown argument: ${argv[i]}`);
     }
@@ -63,7 +67,7 @@ function parseArgs(argv) {
     usage();
     throw new Error('--target is required.');
   }
-  if (!args.migrateOnly && !args.source) {
+  if (!args.migrateOnly && !args.schemaOnly && !args.source) {
     usage();
     throw new Error('--source is required (or use --migrate-only).');
   }
@@ -138,8 +142,20 @@ async function copyTable(sourceDb, target, table) {
   return inserted;
 }
 
+/** Remove the default seed rows that migrations insert, leaving empty tables. */
+async function clearDefaultRows(target) {
+  for (const table of ['transactions', 'assets', 'settings']) {
+    try {
+      await target.execute(`DELETE FROM ${escIdent(table)}`);
+      console.log(`  cleared ${table}`);
+    } catch (err) {
+      throw new Error(`Failed to clear ${table}: ${err.message}`);
+    }
+  }
+}
+
 async function main() {
-  const { source, target: targetUrl, migrateOnly } = parseArgs(process.argv.slice(2));
+  const { source, target: targetUrl, migrateOnly, schemaOnly } = parseArgs(process.argv.slice(2));
   const authToken = process.env.TURSO_AUTH_TOKEN;
   if (!targetUrl.startsWith('file:') && !authToken) {
     throw new Error(
@@ -152,6 +168,12 @@ async function main() {
   await applyMigrations(target);
   if (migrateOnly) {
     console.log('Done (migrate-only: kept migration default seed rows).');
+    return;
+  }
+  if (schemaOnly) {
+    console.log('Clearing migration default seed rows...');
+    await clearDefaultRows(target);
+    console.log('Done (schema-only: empty tables, no data).');
     return;
   }
 
@@ -188,14 +210,7 @@ async function main() {
     console.log(`Tables to copy: ${tables.join(', ')}`);
 
     console.log('Clearing migration default seed rows...');
-    for (const table of ['transactions', 'assets', 'settings']) {
-      try {
-        await target.execute(`DELETE FROM ${escIdent(table)}`);
-        console.log(`  cleared ${table}`);
-      } catch (err) {
-        throw new Error(`Failed to clear ${table}: ${err.message}`);
-      }
-    }
+    await clearDefaultRows(target);
 
     console.log('Copying data from source to target...');
     const counts = {};
