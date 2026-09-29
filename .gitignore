@@ -9,6 +9,7 @@ app.db*
 
 # Environment variables and local credentials
 .env*
+!.env.example
 *.pem
 *.key
 
