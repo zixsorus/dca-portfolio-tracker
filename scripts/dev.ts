@@ -8,8 +8,9 @@
  *  - Vite dev server on http://localhost:5173 with /api proxied to :3001
  *
  * Database: uses TURSO_DATABASE_URL when set, otherwise a local SQLite file
- * at ./local.db (created + seeded from your portfolio data on first run when
- * the original app.db is found; read-only, never modified).
+ * at ./local.db — created on first run and seeded from your portfolio data
+ * when the original app.db is found (read-only, never modified), otherwise
+ * created with the migration default data.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn, execFileSync } from "node:child_process";
@@ -59,23 +60,20 @@ function ensureDatabase(): void {
   if (existsSync(localDb)) return;
 
   const hatchDb = join(homedir(), "workspace", "ts-spaces", "dca-portfolio-tracker", "app.db");
+  const seedArgs =
+    existsSync(hatchDb)
+      ? ["--source", hatchDb, "--target", `file:${localDb}`]
+      : ["--migrate-only", "--target", `file:${localDb}`];
   if (existsSync(hatchDb)) {
     console.log("[dev] creating ./local.db from your portfolio data (first run)…");
-    execFileSync(
-      process.execPath,
-      [
-        join(SCRIPT_DIR, "seed-from-sqlite.mjs"),
-        "--source", hatchDb,
-        "--target", `file:${localDb}`,
-      ],
-      { cwd: WORK_DIR, stdio: "inherit" },
-    );
   } else {
-    console.warn(
-      "[dev] no TURSO_DATABASE_URL and no local.db — set TURSO_DATABASE_URL in .env " +
-      "or run: node scripts/seed-from-sqlite.mjs --source <app.db> --target file:./local.db",
-    );
+    console.log("[dev] creating ./local.db with default data (first run)…");
   }
+  execFileSync(
+    process.execPath,
+    [join(SCRIPT_DIR, "seed-from-sqlite.mjs"), ...seedArgs],
+    { cwd: WORK_DIR, stdio: "inherit" },
+  );
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {

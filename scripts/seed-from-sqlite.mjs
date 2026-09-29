@@ -25,8 +25,14 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
 import { createClient } from '@libsql/client';
+
+// node:sqlite is imported lazily (only needed when reading a source DB file)
+// so --migrate-only also works on Node versions without node:sqlite.
+async function openSourceReadOnly(path) {
+  const { DatabaseSync } = await import('node:sqlite');
+  return new DatabaseSync(path, { readOnly: true });
+}
 
 const BATCH_SIZE = 200;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -35,22 +41,31 @@ const MIGRATIONS_DIR = join(WORK_DIR, 'drizzle');
 const BREAKPOINT = '--> statement-breakpoint';
 
 function usage() {
-  console.error(`Usage: node scripts/seed-from-sqlite.mjs --source <path-to-app.db> --target <libsql-url|file:>
+  console.error(`Usage:
+  node scripts/seed-from-sqlite.mjs --source <path-to-app.db> --target <libsql-url|file:>
+  node scripts/seed-from-sqlite.mjs --migrate-only --target <libsql-url|file:>
+    --migrate-only: apply drizzle migrations only (keeps the migration default
+    seed rows). Use for a fresh local dev database when no source DB exists.
 Auth token via TURSO_AUTH_TOKEN env var only (never as a CLI arg).`);
 }
 
 function parseArgs(argv) {
-  const args = { source: null, target: null };
+  const args = { source: null, target: null, migrateOnly: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--source') args.source = argv[++i];
     else if (argv[i] === '--target') args.target = argv[++i];
+    else if (argv[i] === '--migrate-only') args.migrateOnly = true;
     else {
       throw new Error(`Unknown argument: ${argv[i]}`);
     }
   }
-  if (!args.source || !args.target) {
+  if (!args.target) {
     usage();
-    throw new Error('Both --source and --target are required.');
+    throw new Error('--target is required.');
+  }
+  if (!args.migrateOnly && !args.source) {
+    usage();
+    throw new Error('--source is required (or use --migrate-only).');
   }
   return args;
 }
@@ -124,7 +139,7 @@ async function copyTable(sourceDb, target, table) {
 }
 
 async function main() {
-  const { source, target: targetUrl } = parseArgs(process.argv.slice(2));
+  const { source, target: targetUrl, migrateOnly } = parseArgs(process.argv.slice(2));
   const authToken = process.env.TURSO_AUTH_TOKEN;
   if (!targetUrl.startsWith('file:') && !authToken) {
     throw new Error(
@@ -132,10 +147,18 @@ async function main() {
     );
   }
 
+  const target = createClient({ url: targetUrl, authToken });
+  console.log('Applying drizzle migrations to target...');
+  await applyMigrations(target);
+  if (migrateOnly) {
+    console.log('Done (migrate-only: kept migration default seed rows).');
+    return;
+  }
+
   // Open the source DB read-only — never write to the real user data.
   let sourceDb;
   try {
-    sourceDb = new DatabaseSync(source, { readOnly: true });
+    sourceDb = await openSourceReadOnly(source);
   } catch (err) {
     throw new Error(`Cannot open source DB read-only at ${source}: ${err.message}`);
   }
@@ -146,11 +169,7 @@ async function main() {
   }
   console.log(`Source tables: ${[...sourceTables].join(', ')}`);
 
-  const target = createClient({ url: targetUrl, authToken });
   try {
-    console.log('Step 1/3: applying drizzle migrations to target...');
-    await applyMigrations(target);
-
     // Only copy tables that the migrations created in the target. Drizzle's own
     // __drizzle_migrations bookkeeping table (if present in the source) is not
     // part of the app data model, so it is never copied.
@@ -168,7 +187,7 @@ async function main() {
     }
     console.log(`Tables to copy: ${tables.join(', ')}`);
 
-    console.log('Step 2/3: clearing migration default seed rows...');
+    console.log('Clearing migration default seed rows...');
     for (const table of ['transactions', 'assets', 'settings']) {
       try {
         await target.execute(`DELETE FROM ${escIdent(table)}`);
@@ -178,7 +197,7 @@ async function main() {
       }
     }
 
-    console.log('Step 3/3: copying data from source to target...');
+    console.log('Copying data from source to target...');
     const counts = {};
     for (const table of tables) {
       counts[table] = await copyTable(sourceDb, target, table);
