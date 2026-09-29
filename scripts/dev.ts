@@ -160,12 +160,10 @@ async function main(): Promise<void> {
   });
   console.log(`[dev] API   → http://localhost:${API_PORT}/api/<action>`);
 
-  const viteBin = join(WORK_DIR, "node_modules", ".bin", "vite");
-  const viteCmd = existsSync(viteBin) ? viteBin : "npx";
-  const viteArgs = existsSync(viteBin)
-    ? ["-c", "client/vite.dev.config.ts"]
-    : ["vite", "-c", "client/vite.dev.config.ts"];
-  const vite = spawn(viteCmd, viteArgs, {
+  // Run the vite CLI through node directly (not node_modules/.bin/vite,
+  // which is a .cmd shim on Windows that spawn() cannot execute).
+  const viteCli = join(WORK_DIR, "node_modules", "vite", "bin", "vite.js");
+  const vite = spawn(process.execPath, [viteCli, "-c", "client/vite.dev.config.ts"], {
     cwd: WORK_DIR,
     stdio: "inherit",
     env: { ...process.env, VITE_PORT: String(VITE_PORT) },
