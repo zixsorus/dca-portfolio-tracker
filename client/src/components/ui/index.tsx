@@ -8,6 +8,7 @@ import { CalendarIcon, Check, ChevronDown, X } from "lucide-react";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/style.css";
 import { forwardRef, useState, type ButtonHTMLAttributes, type ComponentPropsWithoutRef, type ElementRef, type HTMLAttributes, type InputHTMLAttributes, type LabelHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
+import { Toaster as Sonner, type ToasterProps } from "sonner";
 import { twMerge } from "tailwind-merge";
 
 export function cn(...values: Array<string | false | null | undefined>) {
@@ -59,6 +60,29 @@ export function Alert({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div data-slot="alert" className={className} {...props} />;
 }
 
+export function Toaster(props: ToasterProps) {
+  return (
+    <Sonner
+      theme="system"
+      position="top-center"
+      closeButton
+      richColors
+      className="toaster group"
+      toastOptions={{
+        classNames: {
+          toast: "ui-toast",
+          title: "ui-toast-title",
+          description: "ui-toast-description",
+          actionButton: "ui-toast-action",
+          cancelButton: "ui-toast-cancel",
+          closeButton: "ui-toast-close",
+        },
+      }}
+      {...props}
+    />
+  );
+}
+
 export function Dialog({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
   return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>{children}</DialogPrimitive.Root>;
 }
@@ -83,14 +107,18 @@ type SelectProps = {
   name: string;
   items: SelectItem[];
   defaultValue?: string;
+  value?: string;
   placeholder?: string;
   required?: boolean;
+  onValueChange?: (value: string) => void;
   "aria-label"?: string;
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 };
 
-export function Select({ name, items, defaultValue, placeholder = "เลือกตัวเลือก", required, "aria-label": ariaLabel }: SelectProps) {
-  return <SelectPrimitive.Root name={name} defaultValue={defaultValue} required={required}>
-    <SelectPrimitive.Trigger data-slot="select-trigger" className="select-trigger" aria-label={ariaLabel}>
+export function Select({ name, items, defaultValue, value, placeholder = "เลือกตัวเลือก", required, onValueChange, "aria-label": ariaLabel, "aria-invalid": ariaInvalid, "aria-describedby": ariaDescribedBy }: SelectProps) {
+  return <SelectPrimitive.Root name={name} defaultValue={value === undefined ? defaultValue : undefined} value={value} required={required} onValueChange={onValueChange}>
+    <SelectPrimitive.Trigger data-slot="select-trigger" className="select-trigger" aria-label={ariaLabel} aria-invalid={ariaInvalid} aria-describedby={ariaDescribedBy}>
       <SelectPrimitive.Value placeholder={placeholder} />
       <SelectPrimitive.Icon asChild><ChevronDown size={16} aria-hidden="true" /></SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
@@ -121,14 +149,14 @@ function toDateValue(value: Date) {
   return `${year}-${month}-${day}`;
 }
 
-export function DatePicker({ name, defaultValue, required, "aria-label": ariaLabel }: { name: string; defaultValue?: string; required?: boolean; "aria-label"?: string }) {
+export function DatePicker({ name, defaultValue, required, onValueChange, "aria-label": ariaLabel, "aria-invalid": ariaInvalid, "aria-describedby": ariaDescribedBy }: { name: string; defaultValue?: string; required?: boolean; onValueChange?: (value: string) => void; "aria-label"?: string; "aria-invalid"?: boolean; "aria-describedby"?: string }) {
   const [value, setValue] = useState(defaultValue ?? "");
   const [open, setOpen] = useState(false);
   const selected = parseDate(value);
   return <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
     <input type="hidden" name={name} value={value} required={required} />
     <PopoverPrimitive.Trigger asChild>
-      <Button variant="secondary" className={cn("date-trigger", !selected && "is-placeholder")} aria-label={ariaLabel}>
+      <Button variant="secondary" className={cn("date-trigger", !selected && "is-placeholder")} aria-label={ariaLabel} aria-invalid={ariaInvalid} aria-describedby={ariaDescribedBy}>
         <CalendarIcon size={16} aria-hidden="true" />
         {selected ? selected.toLocaleDateString("th-TH", { day: "numeric", month: "long", year: "numeric" }) : "เลือกวันที่"}
       </Button>
@@ -143,7 +171,9 @@ export function DatePicker({ name, defaultValue, required, "aria-label": ariaLab
           defaultMonth={selected}
           onSelect={(date) => {
             if (!date) return;
-            setValue(toDateValue(date));
+            const nextValue = toDateValue(date);
+            setValue(nextValue);
+            onValueChange?.(nextValue);
             setOpen(false);
           }}
         />

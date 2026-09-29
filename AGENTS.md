@@ -1,26 +1,39 @@
-# Building this web artifact
+# DCA Portfolio Tracker — Vercel port (working copy)
 
-This directory is a web artifact — a TypeScript space: a React client in
-`client/`, server actions in `server/src/actions.ts`, the schema in
-`server/src/schema.ts`, and Drizzle SQL migrations in `drizzle/` (see
-`space.json` for its runtime and slug).
+This directory is a **re-platform working copy** of the Hatch web artifact
+`dca-portfolio-tracker`, ported to deploy on Vercel as a static SPA + serverless
+API functions.
 
-Build, audit, and ship it only through the web-artifact builder interface your
-session provides — the exact plan → build → audit → submit flow, how to edit or
-inspect an existing artifact, and the schema/migration commands are all in your
-builder instructions and the artifacts skill, which stay current if that
-interface ever changes. Do not hand-edit the
-built bundle under `.space-build/`, and do not `bun run build`: neither
-publishes the artifact.
+- Source (read-only, never edit): `~/workspace/ts-spaces/dca-portfolio-tracker/`
+- This folder: work here freely. It is NOT the canonical artifact — do not
+  treat it as one and do not use artifact tools against the `dca-portfolio-tracker`
+  slug from here.
+- No push/commit to GitHub from this folder without the user's explicit repo
+  confirmation.
 
-If you are not the builder subagent (for example, the main assistant landed
-here), do not build from this directory. List the existing artifacts and
-request a change by describing the edit — that spawns a builder to do the
-work.
+## Project layout (target)
 
-## This artifact's data
+- `client/` — React SPA (Vite build → `client/dist`)
+- `api/` — Vercel serverless functions (one per action, or a single router),
+  Node runtime, drizzle-orm + @libsql/client (Turso)
+- `shared/` — drizzle schema shared by api/ and scripts
+- `drizzle/` — SQL migrations (applied to Turso)
+- `scripts/` — seed-from-sqlite.mjs (migrates real data from the original
+  `app.db` into Turso; never commits or modifies the original DB file)
+- `vercel.json`, `DEPLOY.md` (Thai), `README.md`
 
-This artifact's data lives in `app.db`, managed by the app: read it with the
-artifact inspect data operations and change it through the app's own actions
-(`artifact.invoke_action`) or an artifact edit, never by running sqlite or
-scripts against the file.
+## Hard rules
+
+- Never write to `~/workspace/ts-spaces/dca-portfolio-tracker/app.db*`
+  (read-only source of real user data for migration).
+- Never commit `app.db*`, `*.sqlite*`, `.env*`, API keys, or tokens.
+- No Bun-only APIs (`bun:*` imports). Use `process.env` for config.
+- DB credentials: `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` env vars.
+- Market prices: Finnhub REST (`FINNHUB_API_KEY` env var), keep original
+  guards (exact symbol match, USD only, price > 0, per-symbol failure
+  isolation).
+- Preserve original business logic and validation from `server/src/actions.ts`
+  exactly (weights sum to 100%, gross_thb > fee_thb, symbol unique,
+  next-round allocation formula, trend preset methodology).
+- UI stays Thai, shadcn components, toasts, reserved error space under
+  form fields (client-side only, no logic changes needed).

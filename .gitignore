@@ -3,6 +3,7 @@ node_modules/
 
 # Local application data (may contain portfolio details)
 app.db*
+*.db
 *.sqlite
 *.sqlite3
 
@@ -16,6 +17,7 @@ app.db*
 .space-build-*/
 dist/
 build/
+.vercel/
 *.tsbuildinfo
 
 # Package-manager and tool caches

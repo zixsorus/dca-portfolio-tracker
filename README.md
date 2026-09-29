@@ -1,25 +1,54 @@
-# DCA Portfolio Tracker
+# DCA Portfolio Tracker — Vercel Port
 
-A personal web app for tracking a monthly DCA (dollar-cost averaging) investment
-plan focused on the "Magnificent 7" US stocks — with purchase logging,
-price tracking, goal projection, and rebalancing guidance.
+Vercel-ready port ของเว็บแอป DCA Portfolio Tracker (ย้ายมาจาก Hatch artifact):
+ติดตามแผน DCA รายเดือนในหุ้น "Magnificent 7" (+ AMD) — บันทึกการซื้อ,
+ติดตามราคา, คาดการณ์เป้าหมาย และคำแนะนำ rebalance
 
 ## Stack
 
-- TypeScript, React 19, TanStack Query, Recharts
-- Tailwind CSS v4 with shadcn-style UI components (light/dark mode)
-- Bun runtime, SQLite via Drizzle ORM
-- Market prices via a platform-managed data feed (no API key required)
+- **Frontend:** React 19 SPA (Vite → `client/dist`), Tailwind CSS v4 + shadcn-style UI, TanStack Query, Recharts
+- **Backend:** Vercel Serverless Functions (`api/`, Node runtime), drizzle-orm + `@libsql/client`
+- **Database:** Turso (SQLite, remote)
+- **ราคาหุ้น:** Finnhub REST API (`FINNHUB_API_KEY`)
 
-## Default plan
+## Layout
 
-- Monthly DCA: 2,000 THB
-- Goal: 100,000 THB portfolio value
-- Assets: AAPL, MSFT, NVDA, TSLA, META, AMZN, GOOGL (equal weight, adjustable)
-- Extra stocks/ETFs can be added from the UI
+```
+client/     React SPA (build → client/dist)
+api/        Vercel serverless functions
+shared/     drizzle schema ที่ใช้ร่วมกัน
+drizzle/    SQL migrations (0001–0003)
+scripts/    seed-from-sqlite.mjs — ย้ายข้อมูลจริงจาก app.db → Turso
+vercel.json ค่า deploy ของ Vercel
+DEPLOY.md   คู่มือ deploy ทีละขั้นตอน (ภาษาไทย)
+```
 
-## Notes
+## Environment variables
 
-- This repo is a source snapshot of a privately hosted web artifact.
-- `app.db` (personal portfolio data) is gitignored and never committed.
-- Prices shown are for tracking/education only, not investment advice.
+| ตัวแปร | ใช้ทำอะไร |
+|---|---|
+| `TURSO_DATABASE_URL` | URL ฐานข้อมูล Turso (`libsql://...`) |
+| `TURSO_AUTH_TOKEN` | Token เข้าถึง Turso (**ห้าม**ใส่ในโค้ด/CLI — ใช้ env var เท่านั้น) |
+| `FINNHUB_API_KEY` | API key ของ Finnhub (ฟรี, 60 calls/นาที) |
+
+## Scripts
+
+```bash
+npm run build      # build client → client/dist (Vercel ใช้คำสั่งนี้)
+npm run typecheck  # ตรวจ type ทั้ง client และ api
+npm run seed       # รันสคริปต์ย้ายข้อมูล (ต้องใส่ --source/--target เอง)
+```
+
+ย้ายข้อมูลจริงครั้งเดียว (ดูรายละเอียดใน `DEPLOY.md`):
+
+```bash
+export TURSO_AUTH_TOKEN="<your-token>"
+node scripts/seed-from-sqlite.mjs \
+  --source ~/workspace/ts-spaces/dca-portfolio-tracker/app.db \
+  --target "libsql://<your-db>.turso.io"
+```
+
+## ความปลอดภัย
+
+- `app.db*`, `*.db`, `.env*` ถูก gitignore — ห้าม commit ฐานข้อมูลจริงหรือ key ใดๆ
+- ราคาเป็นข้อมูลเพื่อการติดตาม/การศึกษา ไม่ใช่คำแนะนำการลงทุน
