@@ -1,6 +1,6 @@
 # คู่มือ Deploy — DCA Portfolio Tracker บน Vercel
 
-สถาปัตยกรรม: React SPA (static) + Vercel Serverless Function เดียว (`api/[action].ts`)
+สถาปัตยกรรม: React SPA (static) + Vercel Serverless Function เดียว (`api/handler.ts`)
 + ฐานข้อมูล Turso (SQLite) + ราคาหุ้นสดจาก Finnhub
 
 คู่มือนี้มี 3 ส่วน:
@@ -168,9 +168,17 @@ DB ที่ deploy ไปแล้วต้องรัน `npm run db:migrate`
 | `no such table: price_history` | รัน `npm run db:migrate` (DB production เดิมยังไม่มีตารางนี้) |
 | API บน Vercel ตอบ 500 / เชื่อม DB ไม่ได้ | ตรวจ env vars ทั้ง 3 ตัวใน Vercel → Settings → Environment Variables แล้ว redeploy |
 | เรียก `/api/xxx` แล้วได้ 404 "ไม่พบ action" | ชื่อ action ไม่ตรงกับ key ใน `shared/actions.ts` — ต้อง POST เป็น JSON |
+| ทุก endpoint 404 ทั้งหมดหลัง deploy | ตรวจว่า `vercel.json` ยังมี rewrite `/api/:action` → `/api/handler/:action` — ถ้า rename `api/handler.ts` ไปเป็น `api/[action].ts` dynamic segment ใน `/api` ใช้ไม่ได้ (เป็นฟีเจอร์ Next.js) |
 | ราคาไม่อัปเดต / Finnhub error | ตรวจ `FINNHUB_API_KEY` และดูว่าเกิน 60 calls/นาทีหรือไม่ (8 symbols ปกติไม่เกิน) |
 | "ดึงราคาย้อนหลังไม่สำเร็จ" | `/stock/candle` เป็น endpoint เสียเงินของ Finnhub — เป็นข้อจำกัดของแผนฟรี ไม่ใช่บั๊ก |
 | อยากทดสอบโดยไม่แตะ Turso | ใช้ `--target file:./local.db` (หรือ `/tmp/xxx.db`) กับ `db:seed` / `seed-from-sqlite.mjs` |
+
+## หมายเหตุเรื่อง region
+
+`vercel.json` ตั้ง `"regions": ["hnd1"]` เพราะฐานข้อมูล Turso อยู่
+`aws-ap-northeast-1` (โตเกีย) — Vercel แนะนำให้รันฟังก์ชันใกล้ฐานข้อมูลที่สุด
+ค่าเริ่มต้นถ้าไม่ตั้งคือ `iad1` (วอชิงตัน) ซึ่งห่างจาก DB ประมาณ 1 วินาทีต่อ request
+Hobby เลือกได้ region เดียว
 
 ## Cheat sheet (PowerShell, รันในโฟลเดอร์โปรเจกต์)
 

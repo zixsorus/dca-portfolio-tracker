@@ -13,10 +13,14 @@ API functions.
 
 ## Project layout (target)
 
-- **Backend:** Vercel Serverless — a single catch-all function `api/[action].ts`
-  dispatching through the registry in `api/_actions/index.ts`. Underscore
-  directories are not deployed as functions. This keeps the deployment at 1
-  function regardless of how many actions exist (Vercel Hobby caps at 12).
+- **Backend:** Vercel Serverless — a single function `api/handler.ts` dispatching
+  through the registry in `api/_actions/index.ts`. Underscore directories are
+  not deployed as functions. This keeps the deployment at 1 function
+  regardless of how many actions exist (Vercel Hobby caps at 12).
+  The file is **not** named `[action].ts`: Vercel's standalone `/api`
+  directory maps routes by file path only, and bracket dynamic segments are a
+  Next.js feature, so `vercel.json` rewrites `/api/:action` to
+  `/api/handler/:action` instead. Do not reintroduce brackets.
 - `client/` — React SPA (Vite build → `client/dist`)
 - `api/` — serverless functions (one per action, or a single router),
   Node runtime, drizzle-orm + @libsql/client (Turso)

@@ -3,7 +3,7 @@
  * scripts/dev.ts — `npm run dev`
  *
  * Runs the whole app locally without Vercel CLI:
- *  - API dev server on http://localhost:3001 (loads api/[action].ts directly,
+ *  - API dev server on http://localhost:3001 (loads api/handler.ts directly,
  *    adapting Node req/res to the Vercel handler signature)
  *  - Vite dev server on http://localhost:5173 with /api proxied to :3001
  *
@@ -81,9 +81,9 @@ async function main(): Promise<void> {
   loadDotEnv();
   ensureDatabase();
 
-  // Preload the catch-all router AFTER env setup (api/_lib/db.ts reads env at
-  // import). Same single entry point Vercel serves in production.
-  const routerModule = await import(pathToFileURL(join(WORK_DIR, "api", "[action].ts")).href);
+  // Preload the single function AFTER env setup (api/_lib/db.ts reads env at
+  // import). Same entry point Vercel serves in production.
+  const routerModule = await import(pathToFileURL(join(WORK_DIR, "api", "handler.ts")).href);
   const router = routerModule.default as VercelLikeHandler;
 
   const server = createServer(async (req, res) => {
@@ -100,7 +100,11 @@ async function main(): Promise<void> {
     const body = await readJsonBody(req);
     const vReq = req as IncomingMessage & { body?: unknown; query?: Record<string, string | string[]> };
     vReq.body = body;
-    vReq.query = { ...Object.fromEntries(url.searchParams.entries()), action };
+    // Mirror the production rewrite: /api/<action> -> /api/handler/<action>,
+    // with the action in the last path segment rather than the query string,
+    // so local resolution exercises the same path the CDN uses.
+    vReq.url = `/api/handler/${action}`;
+    vReq.query = Object.fromEntries(url.searchParams.entries());
 
     const vRes = res as ServerResponse & {
       status: (code: number) => ServerResponse;

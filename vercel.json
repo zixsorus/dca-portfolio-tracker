@@ -1,1 +1,11 @@
-{"buildCommand":"npm run build","outputDirectory":"client/dist","rewrites":[{"destination":"/index.html","source":"/((?!api/).*)"}]}
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "regions": ["hnd1"],
+  "buildCommand": "npm run build",
+  "outputDirectory": "client/dist",
+  "rewrites": [
+    { "source": "/api/:action", "destination": "/api/handler/:action" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}

@@ -1,0 +1,18 @@
+# Deployment uploads only the source; the rest is rebuilt on Vercel.
+# Listed explicitly because .vercelignore takes precedence over .gitignore,
+# so the credential rules below are the only thing keeping .env out of a
+# public deployment.
+node_modules/
+client/dist/
+api/.tsbuildinfo.*
+client/.tsbuildinfo.*
+local.db
+*.db
+*.sqlite
+*.sqlite3
+.env*
+!.env.example
+*.pem
+*.key
+*.tsbuildinfo
+*.tsbuildinfo.*

@@ -27,9 +27,13 @@ DEPLOY.md   คู่มือ deploy ทีละขั้นตอน (ภา�
 ## API
 
 ทุก action เป็น `POST /api/<action>` ด้วย JSON body เดียวกันหมด
-ตัว route อยู่ที่ `api/[action].ts` และ map กับ handler ใน `api/_actions/`
-(ขีดนำหน้า `_` ทำให้ Vercel ไม่นับเป็น function แยก — เหลือ function เดียว
-ตัวเดียว ไม่ชนลิมิต 12 functions ของ Vercel Hobby)
+ตัว route อยู่ที่ `api/handler.ts` (function ไฟล์เดียว) และ map กับ handler ใน
+`api/_actions/` (ขีดนำหน้า `_` ทำให้ Vercel ไม่นับเป็น function แยก — เหลือ
+function เดียวตัวเดียว ไม่ชนลิมิต 12 functions ของ Vercel Hobby)
+
+`vercel.json` ทำ rewrite `/api/:action` → `/api/handler/:action` เพราะโฟลเดอร์
+`/api` ของ Vercel map route จาก**ชื่อไฟล์** เท่านั้น — dynamic segment ในวงเล็บ
+`[action].ts` เป็นฟีเจอร์ของ Next.js และจะ 404 ทุก request บนโปรเจกต์นี้
 
 ## Environment variables
 
