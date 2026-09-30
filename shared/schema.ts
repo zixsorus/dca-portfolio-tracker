@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const settings = sqliteTable("settings", {
   id: integer("id").primaryKey(),
@@ -36,3 +36,14 @@ export const transactions = sqliteTable("transactions", {
   note: text("note").notNull().default(""),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
 });
+
+// Daily closing prices kept for the historical charts. Rows are written from
+// the same refresh that fills assets.current_price_usd (free — the price is
+// already in hand) plus an explicit backfill from Finnhub daily candles.
+export const priceHistory = sqliteTable("price_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  assetId: integer("asset_id").notNull().references(() => assets.id, { onDelete: "restrict" }),
+  date: text("date").notNull(),
+  closeUsd: real("close_usd").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+}, (table) => [uniqueIndex("price_history_asset_date").on(table.assetId, table.date), index("price_history_date").on(table.date)]);

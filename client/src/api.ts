@@ -67,8 +67,18 @@ export const api = {
     callAction("deleteAsset", args),
   addTransaction: (args: ActionRequest<"addTransaction">): Promise<ActionResponse<"addTransaction">> =>
     callAction("addTransaction", args),
+  updateTransaction: (args: ActionRequest<"updateTransaction">): Promise<ActionResponse<"updateTransaction">> =>
+    callAction("updateTransaction", args),
   deleteTransaction: (args: ActionRequest<"deleteTransaction">): Promise<ActionResponse<"deleteTransaction">> =>
     callAction("deleteTransaction", args),
+  importTransactions: (args: ActionRequest<"importTransactions">): Promise<ActionResponse<"importTransactions">> =>
+    callAction("importTransactions", args),
+  importBackup: (args: ActionRequest<"importBackup">): Promise<ActionResponse<"importBackup">> =>
+    callAction("importBackup", args),
+  getPriceHistory: (args: ActionRequest<"getPriceHistory">): Promise<ActionResponse<"getPriceHistory">> =>
+    callAction("getPriceHistory", args),
+  backfillPriceHistory: (args: ActionRequest<"backfillPriceHistory">): Promise<ActionResponse<"backfillPriceHistory">> =>
+    callAction("backfillPriceHistory", args),
 };
 
 // Type helpers kept compatible with the previous SDK client so existing

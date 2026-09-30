@@ -19,7 +19,9 @@ app.db*
 dist/
 build/
 .vercel/
+# `tsc --incremental` writes .tsbuildinfo.<project>, so match the suffix too
 *.tsbuildinfo
+*.tsbuildinfo.*
 
 # Package-manager and tool caches
 .bun/

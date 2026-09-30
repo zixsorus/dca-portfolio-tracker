@@ -102,6 +102,11 @@ export function DialogContent({ title, onClose, children }: { title: string; onC
   </DialogPrimitive.Portal>;
 }
 
+/** Bottom-sheet / centred dialog used by every flow in the app. */
+export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return <Dialog open onOpenChange={(open) => !open && onClose()}><DialogContent title={title} onClose={onClose}>{children}</DialogContent></Dialog>;
+}
+
 type SelectItem = { value: string; label: string };
 type SelectProps = {
   name: string;

@@ -1,9 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
+import { buildAllocation } from "../../shared/allocation";
 import { api, type ApiResponse } from "./api";
-import { Alert, Button, Card, DatePicker, Dialog, DialogContent, Input, Label, Select, Tabs, TabsList, TabsTrigger, Textarea, Toaster } from "./components/ui";
+import { BackupModal, type BackupPayload } from "./components/BackupModal";
+import { CsvImportModal, type ImportRejected, type ImportSubmitItem } from "./components/CsvImportModal";
+import { HistorySection } from "./components/HistorySection";
+import { PerformanceCard } from "./components/PerformanceCard";
+import { RoundModal, type RoundSubmitItem } from "./components/RoundModal";
+import { Sparkline } from "./components/Sparkline";
+import { Alert, Button, Card, DatePicker, Input, Label, Modal, Select, Tabs, TabsList, TabsTrigger, Textarea, Toaster } from "./components/ui";
+import { buildHistorySeries, computeXirr, type HistorySeries } from "./finance";
 
 type Portfolio = ApiResponse<typeof api, "getPortfolio">;
 type Asset = Portfolio["assets"][number];
@@ -35,10 +43,6 @@ function optionalPositive(value: FormDataEntryValue | null) {
   if (value == null || String(value).trim() === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  return <Dialog open onOpenChange={(open) => !open && onClose()}><DialogContent title={title} onClose={onClose}>{children}</DialogContent></Dialog>;
 }
 
 type FormErrors = Record<string, string>;
@@ -98,6 +102,11 @@ export function App() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("overview");
   const [transactionOpen, setTransactionOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
+  const [roundOpen, setRoundOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
   const [assetOpen, setAssetOpen] = useState(false);
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -120,6 +129,11 @@ export function App() {
   const portfolio = useQuery({ queryKey: ["portfolio"], queryFn: () => api.getPortfolio({}) });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["portfolio"] });
 
+  // Price history is only needed for the backward-looking charts, so it is a
+  // separate query and can be refetched without re-reading the portfolio.
+  const priceHistory = useQuery({ queryKey: ["priceHistory"], queryFn: () => api.getPriceHistory({}) });
+  const invalidateHistory = () => queryClient.invalidateQueries({ queryKey: ["priceHistory"] });
+
   const addTransaction = useMutation({
     mutationFn: (input: Parameters<typeof api.addTransaction>[0]) => api.addTransaction(input),
     onSuccess: async (result) => {
@@ -128,9 +142,26 @@ export function App() {
     },
     onError: () => toast.error("บันทึกรายการซื้อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
   });
+  const updateTransaction = useMutation({
+    mutationFn: (input: Parameters<typeof api.updateTransaction>[0]) => api.updateTransaction(input),
+    onSuccess: async (result) => {
+      if (!result.ok) { setTransactionErrors({ assetId: result.error ?? "แก้ไขไม่สำเร็จ" }); return; }
+      await refresh();
+      setTransactionErrors({});
+      setTransactionOpen(false);
+      setEditingTransaction(null);
+      toast.success("แก้ไขรายการซื้อแล้ว");
+    },
+    onError: () => toast.error("แก้ไขรายการซื้อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
+  });
   const deleteTransaction = useMutation({
     mutationFn: (id: number) => api.deleteTransaction({ id }),
-    onSuccess: async () => { await refresh(); toast.success("ลบรายการแล้ว"); },
+    onSuccess: async (result) => {
+      if (!result.ok) { toast.error(result.error ?? "ลบรายการไม่สำเร็จ"); return; }
+      setDeletingTransaction(null);
+      await refresh();
+      toast.success("ลบรายการแล้ว");
+    },
     onError: () => toast.error("ลบรายการไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
   });
   const saveSettings = useMutation({
@@ -165,7 +196,7 @@ export function App() {
   const refreshMarketPrices = useMutation({
     mutationFn: () => api.refreshMarketPrices({}),
     onSuccess: async (result) => {
-      if (result.updated > 0) await refresh();
+      if (result.updated > 0) { await refresh(); await invalidateHistory(); }
       if (!result.ok) {
         const failedNote = result.failedSymbols.length > 0 ? ` (${result.failedSymbols.join(", ")})` : "";
         toast.error(`${result.error ?? "อัปเดตราคาไม่สำเร็จ"}${failedNote}`);
@@ -187,6 +218,55 @@ export function App() {
       setPresetPreview(result);
     },
     onError: () => toast.error("ดึงข้อมูลสำหรับพรีเซ็ตไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
+  });
+  const importTransactions = useMutation({
+    mutationFn: (items: ImportSubmitItem[]) => api.importTransactions({ items }),
+    onSuccess: async (result) => {
+      await refresh();
+      if (result.imported > 0) {
+        const skippedNote = result.failed.length > 0 ? ` ข้าม ${result.failed.length} รายการที่บันทึกไม่ได้` : undefined;
+        toast.success(`บันทึก ${result.imported} รายการแล้ว`, { description: skippedNote });
+      }
+      if (result.failed.length > 0) {
+        toast.error(`ข้าม ${result.failed.length} รายการ`, {
+          description: result.failed.slice(0, 3).map((row) => `แถวที่ ${row.index + 1}${row.symbol ? ` (${row.symbol})` : ""}: ${row.error}`).join(" · "),
+        });
+      }
+      if (result.imported === 0) return;
+      setImportOpen(false);
+      setRoundOpen(false);
+    },
+    onError: () => toast.error("บันทึกรายการไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
+  });
+  const importBackup = useMutation({
+    mutationFn: (payload: BackupPayload) => api.importBackup({ payload }),
+    onSuccess: async (result) => {
+      if (!result.ok) { toast.error(result.error ?? "กู้คืนข้อมูลไม่สำเร็จ"); return; }
+      await refresh();
+      setBackupOpen(false);
+      const parts = [
+        result.addedTransactions > 0 ? `เพิ่มรายการซื้อ ${result.addedTransactions} รายการ` : null,
+        result.addedAssets > 0 ? `เพิ่มหุ้น ${result.addedAssets} ตัว` : null,
+        result.skippedAssets > 0 ? `ข้ามหุ้นที่มีอยู่แล้ว ${result.skippedAssets} ตัว` : null,
+        result.skippedTransactions > 0 ? `ข้ามรายการที่หาหุ้นไม่เจอ ${result.skippedTransactions} รายการ` : null,
+      ].filter((part): part is string => part !== null);
+      toast.success("กู้คืนข้อมูลแล้ว", { description: parts.length > 0 ? parts.join(" · ") : "ไม่มีข้อมูลใหม่ที่ต้องเพิ่ม" });
+    },
+    onError: () => toast.error("กู้คืนข้อมูลไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
+  });
+  const backfillPriceHistory = useMutation({
+    mutationFn: () => api.backfillPriceHistory({}),
+    onSuccess: async (result) => {
+      await invalidateHistory();
+      if (!result.ok) {
+        const failedNote = result.failedSymbols.length > 0 ? ` (${result.failedSymbols.join(", ")})` : "";
+        toast.error(`${result.error ?? "ดึงราคาย้อนหลังไม่สำเร็จ"}${failedNote}`);
+        return;
+      }
+      const failedNote = result.failedSymbols.length > 0 ? ` ไม่พบข้อมูล ${result.failedSymbols.join(", ")}` : undefined;
+      toast.success(`เก็บราคาย้อนหลัง ${number.format(result.rows)} จุด`, { description: failedNote });
+    },
+    onError: () => toast.error("ดึงราคาย้อนหลังไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"),
   });
   const applyWeightPreset = useMutation({
     mutationFn: (preview: PresetPreview) => api.applyWeightPreset({ items: preview.items.map((item) => ({ id: item.id, weight: item.weight })) }),
@@ -233,11 +313,10 @@ export function App() {
     });
     const desiredTotal = totalValue + settings.monthlyDca;
     const needs = withWeights.map((row) => ({ ...row, need: Math.max(0, row.normalizedTarget * desiredTotal - row.referenceValueThb) }));
-    const needTotal = needs.reduce((sum, row) => sum + row.need, 0);
-    const allocation = needs.map((row) => ({
-      symbol: row.symbol,
-      amount: needTotal > 0 ? settings.monthlyDca * row.need / needTotal : settings.monthlyDca * row.normalizedTarget,
-    })).filter((row) => row.amount >= 1).sort((a, b) => b.amount - a.amount);
+    const allocation = buildAllocation(
+      needs.map((row) => ({ symbol: row.symbol, need: row.need, normalizedTarget: row.normalizedTarget })),
+      settings.monthlyDca,
+    );
     const monthlyRate = settings.expectedAnnualReturn / 12;
     const projection: Array<{ month: number; value: number }> = [{ month: 0, value: totalValue }];
     let projected = totalValue;
@@ -250,12 +329,32 @@ export function App() {
     return { rows: withWeights, totalInvested, totalValue, exactMarketValue, hasFallbacks, totalTarget, allocation, projection, monthsToGoal: projected >= settings.goalThb ? month : null };
   }, [portfolio.data]);
 
+  // Backward-looking series, derived from daily closes + the trade log. The
+  // FX convention matches the headline numbers: the *current* plan rate, not
+  // each purchase's historical rate.
+  const history = useMemo(() => {
+    const series: HistorySeries[] = (priceHistory.data?.series ?? []).map((entry) => ({
+      assetId: entry.assetId,
+      symbol: entry.symbol,
+      points: entry.points,
+    }));
+    if (!portfolio.data) return { rows: [], series };
+    const rows = buildHistorySeries(series, portfolio.data.transactions, portfolio.data.settings.fxThbUsd);
+    return { rows, series };
+  }, [priceHistory.data, portfolio.data]);
+
+  const performance = useMemo(() => {
+    if (!portfolio.data) return null;
+    return computeXirr(portfolio.data.transactions, computed?.totalValue ?? 0, Date.now());
+  }, [portfolio.data, computed?.totalValue]);
+
   if (portfolio.isPending) return <div className="state-screen"><span className="spinner" />กำลังเปิดสมุดพอร์ต…</div>;
   if (portfolio.error || !portfolio.data || !computed) return <div className="state-screen"><strong>เปิดข้อมูลไม่สำเร็จ</strong><Button onClick={() => portfolio.refetch()}>ลองอีกครั้ง</Button></div>;
 
   const { settings, assets, transactions } = portfolio.data;
   const openTransaction = () => {
     const firstAsset = assets[0];
+    setEditingTransaction(null);
     setTransactionDraft({
       assetId: firstAsset ? String(firstAsset.id) : "",
       grossThb: "",
@@ -265,6 +364,23 @@ export function App() {
     });
     setTransactionErrors({});
     setTransactionOpen(true);
+  };
+  const openTransactionEdit = (tx: Transaction) => {
+    setEditingTransaction(tx);
+    setTransactionDraft({
+      assetId: String(tx.assetId),
+      grossThb: String(tx.grossThb),
+      feeThb: String(tx.feeThb),
+      fxThbUsd: String(tx.fxThbUsd),
+      priceUsd: String(tx.priceUsd),
+    });
+    setTransactionErrors({});
+    setTransactionOpen(true);
+  };
+  const closeTransaction = () => {
+    setTransactionOpen(false);
+    setEditingTransaction(null);
+    setTransactionErrors({});
   };
   const selectedTransactionAsset = assets.find((asset) => String(asset.id) === transactionDraft.assetId) ?? null;
   const transactionGross = Number(transactionDraft.grossThb);
@@ -283,9 +399,18 @@ export function App() {
     return latest;
   }, null);
   const progress = settings.goalThb > 0 ? computed.totalValue / settings.goalThb : 0;
-  const pnl = computed.exactMarketValue > 0 ? computed.exactMarketValue - computed.rows.filter((r) => r.marketValueThb != null).reduce((s, r) => s + r.investedThb, 0) : null;
+  // P&L keeps the original definition: market value minus *gross* invested, so
+  // brokerage fees always read as a loss. The net line below is additive
+  // context only — it is computed over exactly the same rows as `pnl` so the
+  // two numbers always reconcile.
+  const pricedRows = computed.rows.filter((row) => row.marketValueThb != null);
+  const pnl = computed.exactMarketValue > 0
+    ? computed.exactMarketValue - pricedRows.reduce((sum, row) => sum + row.investedThb, 0)
+    : null;
+  const pricedFees = pricedRows.reduce((sum, row) => sum + (row.investedThb - row.netThb), 0);
+  const pnlNet = pnl == null ? null : pnl + pricedFees;
 
-  function onAddTransaction(event: FormEvent<HTMLFormElement>) {
+  function onSubmitTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const assetId = numericValue(form, "assetId");
@@ -306,7 +431,9 @@ export function App() {
     if (note.length > 240) errors.note = "หมายเหตุต้องไม่เกิน 240 ตัวอักษร";
     if (Object.keys(errors).length > 0) { setTransactionErrors(errors); return; }
     setTransactionErrors({});
-    addTransaction.mutate({ assetId: assetId ?? 0, tradeDate, grossThb: grossThb ?? 0, feeThb: feeThb ?? 0, fxThbUsd: fxThbUsd ?? 0, priceUsd: priceUsd ?? 0, note });
+    const values = { assetId: assetId ?? 0, tradeDate, grossThb: grossThb ?? 0, feeThb: feeThb ?? 0, fxThbUsd: fxThbUsd ?? 0, priceUsd: priceUsd ?? 0, note };
+    if (editingTransaction) updateTransaction.mutate({ id: editingTransaction.id, ...values });
+    else addTransaction.mutate(values);
   }
 
   function onSaveSettings(event: FormEvent<HTMLFormElement>) {
@@ -400,11 +527,17 @@ export function App() {
               <div><span>กำไร/ขาดทุน</span><strong className={pnl != null && pnl < 0 ? "negative" : "positive"}>{pnl == null ? "—" : baht.format(pnl)}</strong></div>
               <div><span>ถึงเป้าโดยประมาณ</span><strong>{computed.monthsToGoal == null ? "มากกว่า 50 ปี" : `${computed.monthsToGoal} เดือน`}</strong></div>
             </div>
+            {pnlNet != null && pricedFees > 0 && <p className="hero-fee-note">ค่าธรรมเนียมสะสม {baht.format(pricedFees)} · กำไรสุทธิหลังหักค่าธรรมเนียม {baht.format(pnlNet)}</p>}
           </Card>
+
+          {performance && <PerformanceCard result={performance} expectedAnnualReturn={settings.expectedAnnualReturn} currentValueThb={computed.totalValue} />}
 
           <section className="next-action">
             <div><p className="section-kicker">รอบถัดไป</p><h2>จัดงบ {baht.format(settings.monthlyDca)}</h2><p>เติมฝั่งที่ต่ำกว่าเป้าด้วยเงินใหม่</p></div>
-            <Button onClick={openTransaction}>บันทึกการซื้อ</Button>
+            <div className="lead-actions">
+              <Button variant="secondary" onClick={() => setRoundOpen(true)} disabled={computed.allocation.length === 0}>บันทึกทั้งรอบ</Button>
+              <Button onClick={openTransaction}>บันทึกการซื้อ</Button>
+            </div>
           </section>
 
           <section className="allocation-strip" aria-label="ข้อเสนอการจัดสรรงบรอบถัดไป">
@@ -424,11 +557,13 @@ export function App() {
               {computed.rows.map((row, index) => {
                 const alert = row.dayChange != null && Math.abs(row.dayChange) >= settings.dailyAlertThreshold;
                 const deep = row.drawdown != null && row.drawdown <= -settings.drawdownThreshold;
+                const spark = history.series.find((entry) => entry.assetId === row.id)?.points ?? [];
                 return <article className="asset-row" key={row.id}>
                   <span className="asset-mark" style={{ background: COLORS[index % COLORS.length] }}>{row.symbol.slice(0, 2)}</span>
                   <div className="asset-main">
                     <strong>{row.symbol}</strong>
                     <span>{row.units > 0 ? `${number.format(row.units)} หุ้น` : row.name}</span>
+                    {spark.length >= 2 && <Sparkline points={spark} color={COLORS[index % COLORS.length]!} label={row.symbol} />}
                     <small
                       className={`rebalance-badge ${row.rebalanceSignal}`}
                       aria-label={`แนวทางรีบาลานซ์ ${row.rebalanceSignal === "slow" ? "ชะลอซื้อหรือลดน้ำหนัก" : row.rebalanceSignal === "add" ? "เพิ่มน้ำหนักด้วยเงินใหม่" : "คงแผน"} สัดส่วนต่างจากเป้า ${percent.format(Math.abs(row.rebalanceDelta))}`}
@@ -459,27 +594,41 @@ export function App() {
             </div>
             <p className="fineprint">เป็นเพียงประมาณการจาก DCA รายเดือนและผลตอบแทนที่ตั้งไว้ ไม่ใช่ผลตอบแทนรับประกัน</p>
           </section>
+
+          <HistorySection
+            rows={history.rows}
+            series={history.series}
+            drawdownThreshold={settings.drawdownThreshold}
+            fxThbUsd={settings.fxThbUsd}
+            from={priceHistory.data?.from ?? null}
+            to={priceHistory.data?.to ?? null}
+            backfillPending={backfillPriceHistory.isPending}
+            onBackfill={() => backfillPriceHistory.mutate()}
+          />
         </>}
 
         {tab === "activity" && <section className="page-section">
-          <div className="page-lead"><div><p className="section-kicker">บันทึกการลงทุน</p><h1>รายการซื้อ</h1><p>{transactions.length} รายการ · ลงทุนรวม {baht.format(computed.totalInvested)}</p></div><Button onClick={openTransaction}>เพิ่มรายการ</Button></div>
+          <div className="page-lead"><div><p className="section-kicker">บันทึกการลงทุน</p><h1>รายการซื้อ</h1><p>{transactions.length} รายการ · ลงทุนรวม {baht.format(computed.totalInvested)}</p></div><div className="lead-actions"><Button variant="secondary" onClick={() => setImportOpen(true)}>นำเข้า CSV</Button><Button onClick={openTransaction}>เพิ่มรายการ</Button></div></div>
           {transactions.length === 0 ? <div className="empty-state"><strong>ยังไม่มีรายการซื้อ</strong><p>เริ่มจากบันทึกยอดซื้อจริงครั้งแรก แล้วระบบจะคำนวณจำนวนหุ้นและต้นทุนเฉลี่ยให้</p><Button variant="secondary" onClick={openTransaction}>บันทึกครั้งแรก</Button></div> : <div className="transaction-list">
             {transactions.map((tx: Transaction) => {
               const units = (tx.grossThb - tx.feeThb) / tx.fxThbUsd / tx.priceUsd;
               return <article className="transaction-row" key={tx.id}>
                 <div className="date-box"><strong>{new Date(`${tx.tradeDate}T00:00:00`).toLocaleDateString("th-TH", { day: "2-digit" })}</strong><span>{new Date(`${tx.tradeDate}T00:00:00`).toLocaleDateString("th-TH", { month: "short", year: "2-digit" })}</span></div>
                 <div className="transaction-main"><strong>{tx.symbol}</strong><span>{number.format(units)} หุ้น @ {usd.format(tx.priceUsd)}</span>{tx.note && <small>{tx.note}</small>}</div>
-                <div className="transaction-amount"><strong>{baht.format(tx.grossThb)}</strong><span>ค่าธรรมเนียม {baht.format(tx.feeThb)}</span><Button variant="ghost" className="danger-link" onClick={() => deleteTransaction.mutate(tx.id)} disabled={deleteTransaction.isPending}>ลบ</Button></div>
+                <div className="transaction-amount"><strong>{baht.format(tx.grossThb)}</strong><span>ค่าธรรมเนียม {baht.format(tx.feeThb)}</span><div className="row-actions"><Button variant="ghost" className="edit-link" onClick={() => openTransactionEdit(tx)}>แก้ไข</Button><Button variant="ghost" className="danger-link" onClick={() => setDeletingTransaction(tx)}>ลบ</Button></div></div>
               </article>;
             })}
           </div>}
         </section>}
 
         {tab === "plan" && <section className="page-section">
-          <div className="page-lead"><div><p className="section-kicker">ปรับได้ทุกเมื่อ</p><h1>แผนและราคาล่าสุด</h1><p>ตั้งสมมติฐาน จัดการหุ้น และอัปเดตราคาตลาดโดยไม่ต้องตั้งค่า API key</p></div></div>
-          <section className="price-sync" aria-label="ดึงราคาหุ้นจาก Market Data ของแพลตฟอร์ม">
-            <div><span className="live-mark" aria-hidden="true" /><div><strong>แหล่งราคาหุ้น: Market Data (finance_ticker)</strong><p>{latestPriceUpdatedAt ? `ราคาล่าสุด · อัปเดต ${new Date(latestPriceUpdatedAt).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" })}` : "ยังไม่เคยดึงราคา · ไม่ต้องใช้ API key"}</p></div></div>
-            <Button variant="secondary" type="button" onClick={() => refreshMarketPrices.mutate()} disabled={assets.length === 0 || refreshMarketPrices.isPending}>{refreshMarketPrices.isPending ? "กำลังดึงราคา…" : "ดึงราคาล่าสุด"}</Button>
+          <div className="page-lead"><div><p className="section-kicker">ปรับได้ทุกเมื่อ</p><h1>แผนและราคาล่าสุด</h1><p>ตั้งสมมติฐาน จัดการหุ้น และอัปเดตราคาตลาดจาก Finnhub</p></div></div>
+          <section className="price-sync" aria-label="ดึงราคาหุ้นจาก Finnhub">
+            <div><span className="live-mark" aria-hidden="true" /><div><strong>แหล่งราคาหุ้น: Finnhub</strong><p>{latestPriceUpdatedAt ? `ราคาล่าสุด · อัปเดต ${new Date(latestPriceUpdatedAt).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" })}` : "ยังไม่เคยดึงราคา · ต้องตั้งค่า FINNHUB_API_KEY บนเซิร์ฟเวอร์"}</p></div></div>
+            <div className="lead-actions">
+              <Button variant="secondary" type="button" onClick={() => backfillPriceHistory.mutate()} disabled={assets.length === 0 || backfillPriceHistory.isPending}>{backfillPriceHistory.isPending ? "กำลังดึงย้อนหลัง…" : "ดึงราคาย้อนหลัง 1 ปี"}</Button>
+              <Button variant="secondary" type="button" onClick={() => refreshMarketPrices.mutate()} disabled={assets.length === 0 || refreshMarketPrices.isPending}>{refreshMarketPrices.isPending ? "กำลังดึงราคา…" : "ดึงราคาล่าสุด"}</Button>
+            </div>
           </section>
           <form className="settings-form" onSubmit={onSaveSettings} noValidate>
             <div className="form-section"><h2>เป้าหมาย</h2><div className="field-grid"><Field label="DCA ต่อเดือน (บาท)" name="monthlyDca" type="number" min="1" step="1" defaultValue={settings.monthlyDca} error={settingsErrors.monthlyDca} onClearError={() => clearError(setSettingsErrors, "monthlyDca")}/><Field label="เป้าหมายพอร์ต (บาท)" name="goalThb" type="number" min="1" step="1" defaultValue={settings.goalThb} error={settingsErrors.goalThb} onClearError={() => clearError(setSettingsErrors, "goalThb")}/><Field label="ผลตอบแทนคาดหวังต่อปี (%)" name="expectedAnnualReturn" type="number" step="0.1" defaultValue={settings.expectedAnnualReturn * 100} error={settingsErrors.expectedAnnualReturn} onClearError={() => clearError(setSettingsErrors, "expectedAnnualReturn")}/><Field label="FX ปัจจุบัน (บาท/USD)" name="fxThbUsd" type="number" min="0.01" step="0.01" defaultValue={settings.fxThbUsd} required={false} error={settingsErrors.fxThbUsd} onClearError={() => clearError(setSettingsErrors, "fxThbUsd")}/></div></div>
@@ -506,6 +655,10 @@ export function App() {
             {assets.map((asset) => <Button variant="ghost" key={asset.id} className="plan-row" type="button" aria-label={`แก้ไข ${asset.symbol}`} onClick={() => { setEditingAsset(asset); setDeleteConfirmOpen(false); }}><span><strong>{asset.symbol}</strong><small>{asset.name} · {asset.sector}</small></span><span className="plan-row-meta"><strong>{percent.format(asset.targetWeight)}</strong><small>{asset.currentPriceUsd ? usd.format(asset.currentPriceUsd) : "ยังไม่มีราคา"}</small><em>แก้ไข</em></span></Button>)}
           </div>}
           <div className={Math.abs(computed.totalTarget - 1) < 0.0001 ? "weight-total okay" : "weight-total warning-box"}><span>น้ำหนักรวม</span><strong>{percent.format(computed.totalTarget)}</strong><small>{Math.abs(computed.totalTarget - 1) < 0.0001 ? "ครบ 100%" : "ควรปรับให้รวมเป็น 100%"}</small></div>
+          <div className="data-tools">
+            <div><h2>สำรองและย้ายข้อมูล</h2><p>ดาวน์โหลดแคปเชอร์ไว้นอกเครื่อง หรือย้ายข้อมูลจากเครื่องอื่น</p></div>
+            <div className="lead-actions"><Button variant="secondary" onClick={() => setImportOpen(true)}>นำเข้า CSV</Button><Button variant="secondary" onClick={() => setBackupOpen(true)}>สำรอง / กู้คืน</Button></div>
+          </div>
         </section>}
       </main>
 
@@ -534,14 +687,14 @@ export function App() {
         </div>
       </Modal>}
 
-      {transactionOpen && <Modal title="บันทึกรายการซื้อ" onClose={() => { setTransactionOpen(false); setTransactionErrors({}); }}><form className="modal-form" onSubmit={onAddTransaction} noValidate>
+      {transactionOpen && <Modal title={editingTransaction ? `แก้ไขรายการซื้อ ${editingTransaction.symbol}` : "บันทึกรายการซื้อ"} onClose={closeTransaction}><form className="modal-form" onSubmit={onSubmitTransaction} noValidate>
         <Label><span>หุ้น</span><Select name="assetId" aria-label="เลือกหุ้น" value={transactionDraft.assetId || undefined} required items={assets.map((asset) => ({ value: String(asset.id), label: `${asset.symbol} — ${asset.name}` }))} aria-invalid={Boolean(transactionErrors.assetId)} aria-describedby={transactionErrors.assetId ? "transaction-assetId-error" : undefined} onValueChange={(value) => {
           const asset = assets.find((item) => String(item.id) === value);
           setTransactionDraft((previous) => ({ ...previous, assetId: value, priceUsd: asset?.currentPriceUsd ? String(asset.currentPriceUsd) : "" }));
           clearError(setTransactionErrors, "assetId");
           clearError(setTransactionErrors, "priceUsd");
         }} /><FieldError id="transaction-assetId-error" message={transactionErrors.assetId} /></Label>
-        <Label><span>วันที่ซื้อ</span><DatePicker name="tradeDate" aria-label="เลือกวันที่ซื้อ" defaultValue={localDateValue()} required aria-invalid={Boolean(transactionErrors.tradeDate)} aria-describedby={transactionErrors.tradeDate ? "transaction-tradeDate-error" : undefined} onValueChange={() => clearError(setTransactionErrors, "tradeDate")} /><FieldError id="transaction-tradeDate-error" message={transactionErrors.tradeDate} /></Label>
+        <Label><span>วันที่ซื้อ</span><DatePicker name="tradeDate" aria-label="เลือกวันที่ซื้อ" defaultValue={editingTransaction?.tradeDate ?? localDateValue()} required aria-invalid={Boolean(transactionErrors.tradeDate)} aria-describedby={transactionErrors.tradeDate ? "transaction-tradeDate-error" : undefined} onValueChange={() => clearError(setTransactionErrors, "tradeDate")} /><FieldError id="transaction-tradeDate-error" message={transactionErrors.tradeDate} /></Label>
         <div className="field-grid">
           <Field label="ยอดซื้อรวม (บาท)" name="grossThb" type="number" min="0.01" step="0.01" placeholder="285.71" value={transactionDraft.grossThb} error={transactionErrors.grossThb} errorId="transaction-grossThb-error" onValueChange={(value) => setTransactionDraft((previous) => ({ ...previous, grossThb: value }))} onClearError={() => clearError(setTransactionErrors, "grossThb")}/>
           <Field label="ค่าธรรมเนียม (บาท)" name="feeThb" type="number" min="0" step="0.01" value={transactionDraft.feeThb} error={transactionErrors.feeThb} errorId="transaction-feeThb-error" onValueChange={(value) => setTransactionDraft((previous) => ({ ...previous, feeThb: value }))} onClearError={() => clearError(setTransactionErrors, "feeThb")}/>
@@ -553,9 +706,70 @@ export function App() {
           <div><span>จำนวนหุ้นโดยประมาณ</span><strong>{calculatedUnits == null ? "—" : number.format(calculatedUnits)}</strong></div>
           <p>{selectedTransactionAsset?.currentPriceUsd ? `ใส่ราคาล่าสุดของ ${selectedTransactionAsset.symbol} ให้อัตโนมัติ แก้ไขเป็นราคาที่ซื้อจริงได้` : "กรอกยอดซื้อ ค่าเงิน และราคาต่อหุ้น ระบบจะคำนวณ USD กับจำนวนหุ้นให้ทันที"}</p>
         </div>
-        <Label><span>หมายเหตุ</span><Textarea name="note" rows={2} maxLength={240} placeholder="เช่น DCA รอบเดือนนี้" aria-invalid={Boolean(transactionErrors.note)} aria-describedby={transactionErrors.note ? "transaction-note-error" : undefined} onChange={() => clearError(setTransactionErrors, "note")} /><FieldError id="transaction-note-error" message={transactionErrors.note} /></Label>
-        <Button className="wide" type="submit" disabled={addTransaction.isPending}>{addTransaction.isPending ? "กำลังบันทึก…" : "บันทึกรายการ"}</Button>
+        <Label><span>หมายเหตุ</span><Textarea name="note" rows={2} maxLength={240} placeholder="เช่น DCA รอบเดือนนี้" defaultValue={editingTransaction?.note} aria-invalid={Boolean(transactionErrors.note)} aria-describedby={transactionErrors.note ? "transaction-note-error" : undefined} onChange={() => clearError(setTransactionErrors, "note")} /><FieldError id="transaction-note-error" message={transactionErrors.note} /></Label>
+        <Button className="wide" type="submit" disabled={addTransaction.isPending || updateTransaction.isPending}>{addTransaction.isPending || updateTransaction.isPending ? "กำลังบันทึก…" : editingTransaction ? "บันทึกการแก้ไข" : "บันทึกรายการ"}</Button>
       </form></Modal>}
+
+      {deletingTransaction && <Modal title="ลบรายการซื้อ" onClose={() => setDeletingTransaction(null)}>
+        <Alert className="delete-confirm" role="alert">
+          <strong>ลบรายการ {deletingTransaction.symbol} วันที่ {new Date(`${deletingTransaction.tradeDate}T00:00:00`).toLocaleDateString("th-TH", { dateStyle: "medium" })}?</strong>
+          <p>ยอด {baht.format(deletingTransaction.grossThb)} · {number.format((deletingTransaction.grossThb - deletingTransaction.feeThb) / deletingTransaction.fxThbUsd / deletingTransaction.priceUsd)} หุ้น — ย้อนกลับไม่ได้</p>
+          <div><Button variant="secondary" onClick={() => setDeletingTransaction(null)}>ยกเลิก</Button><Button variant="destructive" onClick={() => deleteTransaction.mutate(deletingTransaction.id)} disabled={deleteTransaction.isPending}>{deleteTransaction.isPending ? "กำลังลบ…" : "ยืนยันลบ"}</Button></div>
+        </Alert>
+      </Modal>}
+
+      {roundOpen && <RoundModal
+        slices={computed.allocation}
+        assets={assets}
+        fxThbUsd={settings.fxThbUsd}
+        today={localDateValue()}
+        note={`DCA ${new Date().toLocaleDateString("th-TH", { month: "short", year: "2-digit" })}`}
+        pending={importTransactions.isPending}
+        onClose={() => setRoundOpen(false)}
+        onSubmit={(items: RoundSubmitItem[]) => importTransactions.mutate(items)}
+      />}
+
+      {importOpen && <CsvImportModal
+        assets={assets}
+        existing={transactions}
+        defaultFxThbUsd={settings.fxThbUsd}
+        pending={importTransactions.isPending}
+        onClose={() => setImportOpen(false)}
+        onSubmit={(items: ImportSubmitItem[], rejected: ImportRejected[]) => {
+          if (items.length === 0) {
+            toast.error("ไม่มีรายการที่นำเข้าได้", { description: rejected[0]?.reason });
+            return;
+          }
+          importTransactions.mutate(items);
+        }}
+      />}
+
+      {backupOpen && <BackupModal
+        source={{
+          settings: {
+            monthlyDca: settings.monthlyDca,
+            goalThb: settings.goalThb,
+            expectedAnnualReturn: settings.expectedAnnualReturn,
+            fxThbUsd: settings.fxThbUsd,
+            dailyAlertThreshold: settings.dailyAlertThreshold,
+            drawdownThreshold: settings.drawdownThreshold,
+            rebalanceTolerance: settings.rebalanceTolerance,
+          },
+          assets: assets.map((asset) => ({ symbol: asset.symbol, name: asset.name, sector: asset.sector, targetWeight: asset.targetWeight })),
+          transactions: transactions.map((tx) => ({
+            symbol: tx.symbol,
+            tradeDate: tx.tradeDate,
+            grossThb: tx.grossThb,
+            feeThb: tx.feeThb,
+            fxThbUsd: tx.fxThbUsd,
+            priceUsd: tx.priceUsd,
+            note: tx.note,
+          })),
+        }}
+        pending={importBackup.isPending}
+        onClose={() => setBackupOpen(false)}
+        onRestore={(payload: BackupPayload) => importBackup.mutate(payload)}
+      />}
 
       {assetOpen && <Modal title="เพิ่มหุ้นหรือ ETF" onClose={() => { setAssetOpen(false); setAssetErrors({}); }}><form className="modal-form" onSubmit={onAddAsset} noValidate>
         <div className="field-grid"><Field label="สัญลักษณ์" name="symbol" placeholder="เช่น VOO" error={assetErrors.symbol} errorId="add-symbol-error" onClearError={() => clearError(setAssetErrors, "symbol")}/><Field label="ชื่อ" name="name" placeholder="เช่น Vanguard S&P 500 ETF" error={assetErrors.name} errorId="add-name-error" onClearError={() => clearError(setAssetErrors, "name")}/></div><Field label="กลุ่ม" name="sector" placeholder="เช่น Broad market ETF" error={assetErrors.sector} errorId="add-sector-error" onClearError={() => clearError(setAssetErrors, "sector")}/><Field label="สัดส่วนเป้าหมาย (%)" name="targetWeight" type="number" min="0" step="0.1" defaultValue={0} error={assetErrors.targetWeight} errorId="add-targetWeight-error" onClearError={() => clearError(setAssetErrors, "targetWeight")}/>

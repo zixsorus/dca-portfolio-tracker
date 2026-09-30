@@ -3,7 +3,7 @@
  * scripts/dev.ts — `npm run dev`
  *
  * Runs the whole app locally without Vercel CLI:
- *  - API dev server on http://localhost:3001 (loads api/<action>.ts directly,
+ *  - API dev server on http://localhost:3001 (loads api/[action].ts directly,
  *    adapting Node req/res to the Vercel handler signature)
  *  - Vite dev server on http://localhost:5173 with /api proxied to :3001
  *
@@ -21,19 +21,6 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const WORK_DIR = resolve(SCRIPT_DIR, "..");
 const API_PORT = Number(process.env.API_PORT ?? 3001);
 const VITE_PORT = Number(process.env.VITE_PORT ?? 5173);
-
-const ACTIONS = [
-  "getPortfolio",
-  "updateSettings",
-  "refreshMarketPrices",
-  "previewWeightPreset",
-  "applyWeightPreset",
-  "addAsset",
-  "updateAsset",
-  "deleteAsset",
-  "addTransaction",
-  "deleteTransaction",
-] as const;
 
 /** Minimal .env loader (KEY=VALUE, ignores comments/blanks, no quotes handling needed). */
 function loadDotEnv(): void {
@@ -94,28 +81,26 @@ async function main(): Promise<void> {
   loadDotEnv();
   ensureDatabase();
 
-  // Preload all action handlers AFTER env setup (api/_lib/db.ts reads env at import).
-  const handlers = new Map<string, VercelLikeHandler>();
-  for (const name of ACTIONS) {
-    const mod = await import(pathToFileURL(join(WORK_DIR, "api", `${name}.ts`)).href);
-    handlers.set(name, mod.default as VercelLikeHandler);
-  }
+  // Preload the catch-all router AFTER env setup (api/_lib/db.ts reads env at
+  // import). Same single entry point Vercel serves in production.
+  const routerModule = await import(pathToFileURL(join(WORK_DIR, "api", "[action].ts")).href);
+  const router = routerModule.default as VercelLikeHandler;
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const match = /^\/api\/([A-Za-z]+)$/.exec(url.pathname);
-    const handler = match ? handlers.get(match[1]) : undefined;
-    if (!handler) {
+    if (!match) {
       res.statusCode = 404;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ok: false, error: "Not found" }));
       return;
     }
+    const action = match[1]!;
 
     const body = await readJsonBody(req);
     const vReq = req as IncomingMessage & { body?: unknown; query?: Record<string, string | string[]> };
     vReq.body = body;
-    vReq.query = Object.fromEntries(url.searchParams.entries());
+    vReq.query = { ...Object.fromEntries(url.searchParams.entries()), action };
 
     const vRes = res as ServerResponse & {
       status: (code: number) => ServerResponse;
@@ -132,9 +117,9 @@ async function main(): Promise<void> {
     };
 
     try {
-      await handler(vReq, vRes);
+      await router(vReq, vRes);
     } catch (err) {
-      console.error(`[api] ${match![1]} crashed:`, err);
+      console.error(`[api] ${action} crashed:`, err);
       if (!res.writableEnded) {
         res.statusCode = 500;
         res.setHeader("content-type", "application/json");

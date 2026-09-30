@@ -1,7 +1,7 @@
 # คู่มือ Deploy — DCA Portfolio Tracker บน Vercel
 
-สถาปัตยกรรม: React SPA (static) + Vercel Serverless Functions (`api/`) +
-ฐานข้อมูล Turso (SQLite) + ราคาหุ้นสดจาก Finnhub
+สถาปัตยกรรม: React SPA (static) + Vercel Serverless Function เดียว (`api/[action].ts`)
++ ฐานข้อมูล Turso (SQLite) + ราคาหุ้นสดจาก Finnhub
 
 คู่มือนี้มี 3 ส่วน:
 
@@ -18,7 +18,8 @@
   - **Database URL** — หน้าตาแบบ `libsql://<ชื่อ-db>-<บัญชี>.turso.io`
   - **Auth Token** — สร้าง token ใหม่สำหรับ DB นี้
 - (ถ้าอยากกด "ดึงราคาล่าสุด") Finnhub API key ฟรี — https://finnhub.io
-  (แผนฟรี 60 calls/นาที แอปนี้ดึง ~8 symbols ใช้ได้สบาย)
+  (แผนฟรี 60 calls/นาที แอปนี้ดึง ~8 symbols ใช้ได้สบาย
+  — ยกเว้น "ดึงราคาย้อนหลัง 1 ปี" ที่ใช้ endpoint เสียเงิน ดูหัวข้อ "เรื่องราคาย้อนหลัง")
 
 > token/key เก็บไว้ในที่ปลอดภัย ใช้ผ่าน environment variable เท่านั้น
 > ห้ามวางลงไฟล์ที่ commit ขึ้น repo
@@ -125,6 +126,36 @@ schema ถูกนิยามที่ `shared/schema.ts` ไฟล์ migrati
 | `npm run db:seed -- --target <url>` | ใส่ค่าเริ่มต้น (settings + หุ้น 7 ตัว) — idempotent รันซ้ำไม่สร้างข้อมูลซ้ำ |
 | `npm run db:studio` | เปิด Drizzle Studio ดู/แก้ข้อมูลใน DB ผ่านเบราว์เซอร์ |
 
+> `drizzle/meta/` ไม่มี snapshot JSON — `db:generate` จึง diff ไม่ออก
+> ให้เขียนไฟล์ `.sql` เองแล้วเพิ่ม entry ใน `drizzle/meta/_journal.json`
+> (ดู `0004_price_history.sql` เป็นตัวอย่าง)
+
+### Migration สำหรับฐานข้อมูลที่ใช้อยู่แล้ว
+
+DB ที่ deploy ไปแล้วต้องรัน `npm run db:migrate` เพื่อเพิ่มตาราง `price_history`
+(ตารางเดียว, ประมาณ 2,000 แถวต่อปีต่อหุ้น 7 ตัว — เล็กมาก) ก่อนกด "ดึงราคาล่าสุด"
+เพราะ action นั้นบันทึกราคาปิดวันนั้นลงตารางนี้ทุกครั้ง
+
+> **ระวัง:** `.env` ของเครื่อง dev ชี้ไปที่ Turso ตัวเดียวกับ production
+> `db:migrate` จึงกระทบข้อมูลจริงทันที — ตรวจ `TURSO_DATABASE_URL`
+> ก่อนรันทุกครั้ง
+
+---
+
+## เรื่องราคาย้อนหลัง (สำคัญ)
+
+กราฟย้อนหลังใช้ตาราง `price_history` ซึ่งมีข้อมูลสองทาง:
+
+1. **บันทึกอัตโนมัติ (ใช้ได้เสมอ)** — ทุกครั้งที่กด "ดึงราคาล่าสุด"
+   ระบบเก็บราคาปิดวันนั้นลง `price_history` โดยไม่กินโควตา Finnhub เพิ่ม
+2. **ดึงย้อนหลัน 1 ปี (ปุ่ม "ดึงราคาย้อนหลัง 1 ปี")** — เรียก
+   `Finnhub /stock/candle` ซึ่ง **เป็น endpoint เสียเงิน** แผนฟรีตอบว่า
+   `You don't have access to this resource.` ปุ่มนี้จึงแจ้งว่าดึงไม่สำเร็จ
+   และไม่กระทบข้อมูลเดิม
+
+ผลคือ: ผู้ใช้ที่เพิ่งเริ่มจะเห็นกราฟย้อนหลังเติบโตทีละวันตามที่กดดึงราคา
+ไม่ใช่ย้อนหลังทันที — ถ้าต้องการประวัติทันทีต้องมีแหล่งราคาอื่น
+
 ---
 
 ## Troubleshooting
@@ -134,8 +165,11 @@ schema ถูกนิยามที่ `shared/schema.ts` ไฟล์ migrati
 | `TURSO_AUTH_TOKEN env var is required` | ลืมตั้ง `$env:TURSO_AUTH_TOKEN="..."` ใน PowerShell ก่อนรัน (อย่าใส่ token เป็น argument) |
 | `drizzle-kit migrate` บอกตารางมีอยู่แล้ว | DB นี้รัน migration ไปแล้ว ข้ามไป `db:seed` ได้เลย |
 | เปิดแอพแล้วขึ้น "เปิดข้อมูลไม่สำเร็จ" | ตาราง `settings` ว่าง — รัน `npm run db:seed` หนึ่งรอบแล้ว refresh |
+| `no such table: price_history` | รัน `npm run db:migrate` (DB production เดิมยังไม่มีตารางนี้) |
 | API บน Vercel ตอบ 500 / เชื่อม DB ไม่ได้ | ตรวจ env vars ทั้ง 3 ตัวใน Vercel → Settings → Environment Variables แล้ว redeploy |
+| เรียก `/api/xxx` แล้วได้ 404 "ไม่พบ action" | ชื่อ action ไม่ตรงกับ key ใน `shared/actions.ts` — ต้อง POST เป็น JSON |
 | ราคาไม่อัปเดต / Finnhub error | ตรวจ `FINNHUB_API_KEY` และดูว่าเกิน 60 calls/นาทีหรือไม่ (8 symbols ปกติไม่เกิน) |
+| "ดึงราคาย้อนหลังไม่สำเร็จ" | `/stock/candle` เป็น endpoint เสียเงินของ Finnhub — เป็นข้อจำกัดของแผนฟรี ไม่ใช่บั๊ก |
 | อยากทดสอบโดยไม่แตะ Turso | ใช้ `--target file:./local.db` (หรือ `/tmp/xxx.db`) กับ `db:seed` / `seed-from-sqlite.mjs` |
 
 ## Cheat sheet (PowerShell, รันในโฟลเดอร์โปรเจกต์)

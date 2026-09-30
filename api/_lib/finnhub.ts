@@ -2,6 +2,7 @@
 // original Hatch space). Uses free-tier supported endpoints:
 // - /quote: real-time/latest price (c), previous close (pc), timestamp (t)
 // - /stock/metric: 52-week high (52WeekHigh), 6-month momentum (26WeekPriceReturnDaily)
+// - /stock/candle: daily close history (1 year on the free tier)
 // Preserves guards: price > 0, per-symbol failure isolation.
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
@@ -111,4 +112,53 @@ export async function getTrendReturn(symbol: string): Promise<TrendResult> {
     trendReturn: returnDaily / 100, // percentage to decimal
     asOfIso: new Date().toISOString(),
   };
+}
+
+interface CandleApiResponse {
+  s?: string;
+  c?: number[];
+  t?: number[];
+}
+
+export interface CandlePoint {
+  /** UTC calendar day, YYYY-MM-DD. */
+  date: string;
+  closeUsd: number;
+}
+
+/**
+ * Daily close history from Finnhub candles.
+ *
+ * Same guard discipline as `getPriceSnapshot`: unknown symbols come back as
+ * `s: "no_data"` (the per-symbol failure), every close must be a finite
+ * number > 0, and pairs are kept aligned on the `t`/`c` arrays. The free tier
+ * serves roughly one year of daily candles, which is the whole retention
+ * window the app uses.
+ */
+export async function getCandleSeries(symbol: string, fromMs: number, toMs: number): Promise<CandlePoint[]> {
+  const token = encodeURIComponent(apiKey());
+  const sym = encodeURIComponent(symbol);
+  const url = `${FINNHUB_BASE}/stock/candle?symbol=${sym}&resolution=D&from=${Math.floor(fromMs / 1000)}&to=${Math.floor(toMs / 1000)}&token=${token}`;
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`Finnhub candle HTTP ${res.status} for ${symbol}`);
+  const data = (await res.json()) as CandleApiResponse;
+  if (data.s !== "ok") throw new Error(`no candle data for ${symbol}`);
+
+  const closes = data.c;
+  const stamps = data.t;
+  if (!Array.isArray(closes) || !Array.isArray(stamps) || closes.length === 0 || closes.length !== stamps.length) {
+    throw new Error(`invalid candle series for ${symbol}`);
+  }
+
+  const points: CandlePoint[] = [];
+  for (let index = 0; index < closes.length; index += 1) {
+    const close = closes[index];
+    const stamp = stamps[index];
+    if (typeof close !== "number" || !Number.isFinite(close) || close <= 0) continue;
+    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
+    points.push({ date: new Date(stamp * 1000).toISOString().slice(0, 10), closeUsd: close });
+  }
+  if (points.length === 0) throw new Error(`no usable closes for ${symbol}`);
+  return points;
 }
